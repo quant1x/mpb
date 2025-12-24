@@ -1,6 +1,9 @@
 package mpb
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -89,7 +92,13 @@ func (mp *MultiProgress) Remove(pb *ProgressBar) {
 
 func (mp *MultiProgress) internalize(loc InsertLocation, pb *ProgressBar) *ProgressBar {
 	mp.state.mu.Lock()
-	_ = mp.state.insert(loc)
+	idx := mp.state.insert(loc)
+	// register this ProgressBar's SafeBarState in members
+	if idx >= 0 && idx < len(mp.state.members) {
+		mp.state.members[idx].sb = pb.state
+	}
+	// ensure the bar draws into multi draw target so aggregation works
+	pb.SetDrawTarget(mp.state.draw_target)
 	mp.state.mu.Unlock()
 	return pb
 }
@@ -129,26 +138,137 @@ type MultiState struct {
 	ordering         []int
 	draw_target      ProgressDrawTarget
 	alignment        MultiProgressAlignment
-	orphanLines      []LineType
+	orphanLines      []string
 	zombieLinesCount VisualLines
 }
 
 func NewMultiState(dt ProgressDrawTarget) *MultiState {
-	return &MultiState{
+	ms := &MultiState{
 		members:          []MultiStateMember{},
 		freeSet:          []int{},
 		ordering:         []int{},
 		draw_target:      dt,
 		alignment:        MultiProgressAlignmentTop,
-		orphanLines:      []LineType{},
+		orphanLines:      []string{},
 		zombieLinesCount: VisualLines(0),
 	}
+	// wrap the provided draw target so MultiState can aggregate per-bar draws
+	ms.draw_target = &multiDrawTarget{ms: ms, inner: dt}
+	return ms
 }
 
 type MultiStateMember struct {
-	drawState *DrawStateStub
-	isZombie  bool
+	sb       *SafeBarState
+	isZombie bool
 }
+
+// multiDrawTarget wraps an underlying ProgressDrawTarget and provides an
+// Aggregate method used by BarState to request an aggregated draw.
+type multiDrawTarget struct {
+	ms    *MultiState
+	inner ProgressDrawTarget
+	agg   *aggregatedDrawable
+}
+
+func (m *multiDrawTarget) IsHidden() bool                   { return m.inner.IsHidden() }
+func (m *multiDrawTarget) IsStderr() bool                   { return m.inner.IsStderr() }
+func (m *multiDrawTarget) Width() *uint16                   { return m.inner.Width() }
+func (m *multiDrawTarget) Remote() (*RemoteStub, int, bool) { return m.inner.Remote() }
+func (m *multiDrawTarget) Disconnect(now time.Time)         { m.inner.Disconnect(now) }
+
+// Return a single aggregated drawable so MultiState can prepare its
+// combined frame into the returned state's buffer and call Draw() once.
+func (m *multiDrawTarget) Drawable(force bool) Drawable {
+	if m.agg == nil {
+		m.agg = &aggregatedDrawable{state: &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}, mdt: m}
+	}
+	return m.agg
+}
+func (m *multiDrawTarget) SetMoveCursor(move bool) {
+	if setter, ok := m.inner.(interface{ SetMoveCursor(bool) }); ok {
+		setter.SetMoveCursor(move)
+	}
+}
+
+// AggregateDrawBar triggers an aggregated draw for the whole MultiState.
+func (m *multiDrawTarget) AggregateDrawBar(b *BarState, force bool, now time.Time) error {
+	_, err := m.ms.draw(force, nil, nil, b, now)
+	return err
+}
+
+func (m *multiDrawTarget) AggregateDrawOrigin(originLines []LineType, originContents []string, b *BarState, force bool, now time.Time) error {
+	_, err := m.ms.draw(force, originLines, originContents, b, now)
+	return err
+}
+
+// aggregatedDrawable is a single, reusable drawable used by MultiState to
+// produce one atomic frame write. MultiState populates its `state` buffer
+// and then calls Draw() once.
+type aggregatedDrawable struct {
+	state *DrawStateStub
+	mdt   *multiDrawTarget
+}
+
+func (a *aggregatedDrawable) State() *DrawStateStub { return a.state }
+
+func (a *aggregatedDrawable) Draw() error {
+	ds := a.state
+	contents := ds.contents
+	newLen := len(contents)
+
+	// Prefer to use concrete progressDrawTarget fast path when available
+	if pt, ok := a.mdt.inner.(*progressDrawTarget); ok {
+		out := os.Stderr
+		pt.mu.Lock()
+		prevHeight := pt.lastHeight
+		if prevHeight > 0 {
+			fmt.Fprintf(out, "\x1b[%dA", prevHeight)
+		}
+		var sb strings.Builder
+		for i := 0; i < newLen; i++ {
+			sb.WriteString("\x1b[2K")
+			sb.WriteString(contents[i])
+			sb.WriteString("\n")
+		}
+		pt.frameLines += newLen
+		if prevHeight > pt.frameLines {
+			rem := prevHeight - pt.frameLines
+			for i := 0; i < rem; i++ {
+				sb.WriteString("\x1b[2K\n")
+			}
+			pt.lastHeight = pt.frameLines
+		} else {
+			pt.lastHeight = pt.frameLines
+		}
+		sb.WriteString("\x1b[0J")
+		_, _ = out.WriteString(sb.String())
+		pt.mu.Unlock()
+		return nil
+	}
+
+	// Fallback: populate inner drawable state and call its Draw()
+	if a.mdt.inner != nil {
+		inner := a.mdt.inner.Drawable(false)
+		if inner != nil {
+			ids := inner.State()
+			ids.lines = ids.lines[:0]
+			ids.contents = ids.contents[:0]
+			for _, c := range contents {
+				ids.contents = append(ids.contents, c)
+			}
+			_ = inner.Draw()
+		}
+	}
+	return nil
+}
+
+func (a *aggregatedDrawable) Clear() error {
+	a.state.lines = a.state.lines[:0]
+	a.state.contents = a.state.contents[:0]
+	return nil
+}
+
+func (a *aggregatedDrawable) Width() *uint16 { return a.mdt.inner.Width() }
 
 func (ms *MultiState) markZombie(index int) {
 	if index < 0 || index >= len(ms.members) {
@@ -157,19 +277,89 @@ func (ms *MultiState) markZombie(index int) {
 	ms.members[index].isZombie = true
 }
 
-func (ms *MultiState) draw(force bool, extraLines []LineType, now time.Time) (interface{}, error) {
+func (ms *MultiState) draw(force bool, originLines []LineType, originContents []string, origin *BarState, now time.Time) (interface{}, error) {
+	// Aggregate all orphan lines and member bar renderings into a single drawable
+	drawable := ms.draw_target.Drawable(force)
+	if drawable == nil {
+		return nil, nil
+	}
+	ds := drawable.State()
+	ds.lines = ds.lines[:0]
+	ds.contents = ds.contents[:0]
+
+	// width from draw target
+	wptr := ms.width()
+	var width int
+	if wptr != nil {
+		width = int(*wptr)
+	}
+
+	// first, orphanLines (printed above bars)
+	for _, ol := range ms.orphanLines {
+		if ol == "" {
+			ds.lines = append(ds.lines, LineEmpty)
+			ds.contents = append(ds.contents, "")
+		} else {
+			ds.lines = append(ds.lines, LineText)
+			ds.contents = append(ds.contents, ol)
+		}
+	}
+
+	// then, each member in ordering
+	for _, idx := range ms.ordering {
+		if idx < 0 || idx >= len(ms.members) {
+			continue
+		}
+		m := ms.members[idx]
+		if m.isZombie || m.sb == nil {
+			continue
+		}
+		// if this is the origin bar, use originLines/originContents provided by caller
+		if origin != nil && m.sb.inner == origin {
+			for _, lt := range originLines {
+				ds.lines = append(ds.lines, lt)
+			}
+			for _, c := range originContents {
+				ds.contents = append(ds.contents, c)
+			}
+			continue
+		}
+		// get formatted representation from SafeBarState (thread-safe)
+		if wptr != nil {
+			lines, contents := m.sb.FormatForWidth(width)
+			for _, lt := range lines {
+				ds.lines = append(ds.lines, lt)
+			}
+			for _, c := range contents {
+				ds.contents = append(ds.contents, c)
+			}
+		}
+	}
+
+	// perform a single draw
+	// trim trailing empty lines to avoid emitting unnecessary blank lines
+	for len(ds.contents) > 0 {
+		last := ds.contents[len(ds.contents)-1]
+		if last == "" {
+			ds.contents = ds.contents[:len(ds.contents)-1]
+			ds.lines = ds.lines[:len(ds.lines)-1]
+			continue
+		}
+		break
+	}
+	_ = drawable.Draw()
 	return nil, nil
 }
 
 func (ms *MultiState) println(msg string, now time.Time) (interface{}, error) {
 	if msg == "" {
-		ms.orphanLines = append(ms.orphanLines, LineEmpty)
+		ms.orphanLines = append(ms.orphanLines, "")
 	} else {
 		for _, l := range splitLines(msg) {
-			ms.orphanLines = append(ms.orphanLines, LineTextVal(l))
+			ms.orphanLines = append(ms.orphanLines, l)
 		}
 	}
-	return nil, nil
+	return ms.draw(false, nil, nil, nil, now)
 }
 
 func splitLines(s string) []string {

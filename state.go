@@ -173,23 +173,29 @@ func (b *BarState) Println(now time.Time, msg string) {
 		return
 	}
 	ds := drawable.State()
-	lines := make([]LineType, 0)
-	for _, l := range strings.Split(msg, "\n") {
-		if l == "" {
-			lines = append(lines, LineEmptyVal())
-		} else {
-			lines = append(lines, LineTextVal(l))
-		}
-	}
-	if len(lines) == 0 {
+	parts := splitLines(msg)
+	if len(parts) == 0 {
 		ds.lines = append(ds.lines, LineEmpty)
+		ds.contents = append(ds.contents, "")
 	} else {
-		ds.lines = append(ds.lines, lines...)
+		for _, part := range parts {
+			if part == "" {
+				ds.lines = append(ds.lines, LineEmpty)
+				ds.contents = append(ds.contents, "")
+			} else {
+				ds.lines = append(ds.lines, LineText)
+				ds.contents = append(ds.contents, part)
+			}
+		}
 	}
 
 	if w := width; w != nil {
 		if !b.state.IsFinished() {
-			b.style.FormatState(&b.state, &ds.lines, int(*w))
+			lines, contents := b.style.FormatState(&b.state, int(*w))
+			ds.lines = append(ds.lines, lines...)
+			for _, c := range contents {
+				ds.contents = append(ds.contents, c)
+			}
 		}
 	}
 
@@ -214,6 +220,13 @@ func (b *BarState) Suspend(now time.Time, f func() interface{}) interface{} {
 func (b *BarState) draw(force bool) error { return b.drawWithNow(force, time.Now()) }
 func (b *BarState) drawWithNow(force bool, now time.Time) error {
 	force = force || b.state.IsFinished()
+	// If draw target supports aggregated draws (MultiProgress), delegate to it.
+	if agg, ok := b.drawTarget.(interface {
+		AggregateDrawBar(*BarState, bool, time.Time) error
+	}); ok {
+		return agg.AggregateDrawBar(b, force, now)
+	}
+
 	drawable := b.drawTarget.Drawable(force)
 	if drawable == nil {
 		return nil
@@ -222,7 +235,11 @@ func (b *BarState) drawWithNow(force bool, now time.Time) error {
 	ds := drawable.State()
 	if width != nil {
 		if !b.state.IsFinished() {
-			b.style.FormatState(&b.state, &ds.lines, int(*width))
+			lines, contents := b.style.FormatState(&b.state, int(*width))
+			ds.lines = append(ds.lines, lines...)
+			for _, c := range contents {
+				ds.contents = append(ds.contents, c)
+			}
 		}
 	}
 	drawable.Draw()
@@ -235,10 +252,12 @@ type Status int
 
 const (
 	StatusInProgress Status = iota
+	statusDoneVisible
+	statusDoneHidden
 )
 
-func StatusDoneVisible(d time.Duration) Status { return StatusInProgress }
-func StatusDoneHidden(d time.Duration) Status  { return StatusInProgress }
+func StatusDoneVisible(d time.Duration) Status { return statusDoneVisible }
+func StatusDoneHidden(d time.Duration) Status  { return statusDoneHidden }
 
 type ProgressState struct {
 	pos     *AtomicPosition
@@ -266,7 +285,7 @@ func NewProgressState(len *uint64, pos *AtomicPosition) ProgressState {
 }
 
 func (ps *ProgressState) IsFinished() bool {
-	return false
+	return ps.status != StatusInProgress
 }
 
 func (ps *ProgressState) Fraction() float32 {
@@ -448,7 +467,10 @@ func (r *RemoteStub) StateWrite() *MultiStateStub { return nil }
 func (m *MultiStateStub) Suspend(f func() interface{}, now time.Time) interface{} { return f() }
 
 // draw target 的具体实现位于 draw_target.go（增量翻译）。
-type DrawStateStub struct{ lines []LineType }
+type DrawStateStub struct {
+	lines    []LineType
+	contents []string
+}
 
 type Drawable interface {
 	State() *DrawStateStub
@@ -474,73 +496,199 @@ type MultiStateStub struct{}
 
 // SafeBarState 是对 BarState 的线程安全包装，模拟 Rust 中的 Arc<Mutex<BarState>> 行为。
 type SafeBarState struct {
-	mu    sync.Mutex
-	inner *BarState
+	mu     sync.Mutex
+	inner  *BarState
+	ticker *tickerSlot
 }
 
 func NewSafeBarState(b *BarState) *SafeBarState { return &SafeBarState{inner: b} }
 
-func (s *SafeBarState) Tick(now time.Time) { s.mu.Lock(); defer s.mu.Unlock(); s.inner.Tick(now) }
+func (s *SafeBarState) startTicker(interval time.Duration, pb *ProgressBar) {
+	if interval <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.ticker == nil {
+		s.ticker = &tickerSlot{}
+	}
+	s.mu.Unlock()
+
+	s.ticker.mu.Lock()
+	defer s.ticker.mu.Unlock()
+	if s.ticker.th != nil {
+		s.ticker.th.Stop()
+	}
+	s.ticker.th = NewTickerHandle(interval, pb)
+}
+
+func (s *SafeBarState) stopTicker() {
+	s.mu.Lock()
+	t := s.ticker
+	s.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.th != nil {
+		t.th.Stop()
+		t.th = nil
+	}
+	t.mu.Unlock()
+}
+
+func (s *SafeBarState) disableTicker() {
+	s.stopTicker()
+}
+
+func (s *SafeBarState) Tick(now time.Time) {
+	s.mu.Lock()
+	inner := s.inner
+	s.mu.Unlock()
+	inner.Tick(now)
+}
 func (s *SafeBarState) FinishUsingStyle(now time.Time, f ProgressFinish) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.FinishUsingStyle(now, f)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.FinishUsingStyle(now, f)
 }
 func (s *SafeBarState) SetStyle(style ProgressStyle) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.SetStyle(style)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.SetStyle(style)
 }
-func (s *SafeBarState) SetTabWidth(w int) { s.mu.Lock(); defer s.mu.Unlock(); s.inner.SetTabWidth(w) }
+func (s *SafeBarState) SetTabWidth(w int) {
+	s.mu.Lock()
+	inner := s.inner
+	s.mu.Unlock()
+	inner.SetTabWidth(w)
+}
 func (s *SafeBarState) UnsetLength(now time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.UnsetLength(now)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.UnsetLength(now)
 }
 func (s *SafeBarState) SetLength(now time.Time, l uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.SetLength(now, l)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.SetLength(now, l)
 }
 func (s *SafeBarState) IncLength(now time.Time, d uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.IncLength(now, d)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.IncLength(now, d)
 }
 func (s *SafeBarState) DecLength(now time.Time, d uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.DecLength(now, d)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.DecLength(now, d)
 }
 func (s *SafeBarState) Update(now time.Time, f func(*ProgressState), tick bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.Update(now, f, tick)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.Update(now, f, tick)
 }
 func (s *SafeBarState) Suspend(now time.Time, f func() interface{}) interface{} {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.inner.Suspend(now, f)
+	inner := s.inner
+	s.mu.Unlock()
+	return inner.Suspend(now, f)
 }
 func (s *SafeBarState) Draw(force bool) error {
+	// Capture formatted origin lines under lock, then perform aggregated draw without holding lock
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var originLines []LineType
+	var originContents []string
+	if wptr := s.inner.drawTarget.Width(); wptr != nil {
+		if !s.inner.state.IsFinished() {
+			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr))
+		}
+	}
+	s.mu.Unlock()
+
+	if agg, ok := s.inner.drawTarget.(interface {
+		AggregateDrawOrigin([]LineType, []string, *BarState, bool, time.Time) error
+	}); ok {
+		return agg.AggregateDrawOrigin(originLines, originContents, s.inner, force, time.Now())
+	}
+
 	return s.inner.draw(force)
 }
 func (s *SafeBarState) DrawWithNow(force bool, now time.Time) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var originLines []LineType
+	var originContents []string
+	if wptr := s.inner.drawTarget.Width(); wptr != nil {
+		if !s.inner.state.IsFinished() {
+			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr))
+		}
+	}
+	s.mu.Unlock()
+
+	if agg, ok := s.inner.drawTarget.(interface {
+		AggregateDrawOrigin([]LineType, []string, *BarState, bool, time.Time) error
+	}); ok {
+		return agg.AggregateDrawOrigin(originLines, originContents, s.inner, force, now)
+	}
+
 	return s.inner.drawWithNow(force, now)
 }
 func (s *SafeBarState) Println(now time.Time, msg string) {
+	// Build origin lines (message + formatted bar) under lock, then delegate to
+	// draw target's AggregateDrawOrigin if available to ensure atomic multi-bar draws.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.Println(now, msg)
+	inner := s.inner
+	var originLines []LineType
+	var originContents []string
+	// message lines
+	parts := splitLines(msg)
+	if len(parts) == 0 {
+		originLines = append(originLines, LineEmpty)
+		originContents = append(originContents, "")
+	} else {
+		for _, part := range parts {
+			if part == "" {
+				originLines = append(originLines, LineEmpty)
+				originContents = append(originContents, "")
+			} else {
+				originLines = append(originLines, LineText)
+				originContents = append(originContents, part)
+			}
+		}
+	}
+	// formatted bar lines
+	if wptr := inner.drawTarget.Width(); wptr != nil {
+		if !inner.state.IsFinished() {
+			lines, contents := inner.style.FormatState(&inner.state, int(*wptr))
+			originLines = append(originLines, lines...)
+			for _, c := range contents {
+				originContents = append(originContents, c)
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	if agg, ok := inner.drawTarget.(interface {
+		AggregateDrawOrigin([]LineType, []string, *BarState, bool, time.Time) error
+	}); ok {
+		_ = agg.AggregateDrawOrigin(originLines, originContents, inner, true, now)
+		return
+	}
+
+	// fallback to previous behavior
+	inner.Println(now, msg)
 }
 func (s *SafeBarState) Reset(now time.Time, mode ResetMode) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.Reset(now, mode)
+	inner := s.inner
+	s.mu.Unlock()
+	inner.Reset(now, mode)
 }
 
 // Accessors for inner ProgressState values
@@ -586,15 +734,17 @@ func (s *SafeBarState) Index() (int, bool) { s.mu.Lock(); defer s.mu.Unlock(); r
 
 func (s *SafeBarState) SetPrefix(prefix string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.state.prefix = NewTabExpandedString(prefix, s.inner.tabWidth)
-	s.inner.UpdateEstimateAndDraw(time.Now())
+	inner := s.inner
+	inner.state.prefix = NewTabExpandedString(prefix, inner.tabWidth)
+	s.mu.Unlock()
+	inner.UpdateEstimateAndDraw(time.Now())
 }
 func (s *SafeBarState) SetMessage(msg string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.state.message = NewTabExpandedString(msg, s.inner.tabWidth)
-	s.inner.UpdateEstimateAndDraw(time.Now())
+	inner := s.inner
+	inner.state.message = NewTabExpandedString(msg, inner.tabWidth)
+	s.mu.Unlock()
+	inner.UpdateEstimateAndDraw(time.Now())
 }
 func (s *SafeBarState) Style() ProgressStyle { s.mu.Lock(); defer s.mu.Unlock(); return s.inner.style }
 func (s *SafeBarState) SetOnFinish(f ProgressFinish) {
@@ -609,13 +759,41 @@ func (s *SafeBarState) GetOnFinish() ProgressFinish {
 }
 func (s *SafeBarState) SetDrawTarget(dt ProgressDrawTarget) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.inner.drawTarget.Disconnect(time.Now())
-	s.inner.drawTarget = dt
+	inner := s.inner
+	old := inner.drawTarget
+	inner.drawTarget = dt
+	s.mu.Unlock()
+	if old != nil {
+		old.Disconnect(time.Now())
+	}
 }
 
 func (s *SafeBarState) IsHidden() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.inner.drawTarget.IsHidden()
+}
+
+// SetElapsed sets the progress start time so that elapsed time equals d.
+func (s *SafeBarState) SetElapsed(d time.Duration) {
+	s.mu.Lock()
+	inner := s.inner
+	start := time.Now().Add(-d)
+	inner.state.started = start
+	inner.state.est.Reset(start)
+	s.mu.Unlock()
+	inner.UpdateEstimateAndDraw(time.Now())
+}
+
+// FormatForWidth returns the formatted lines and contents for the bar under the SafeBarState lock.
+func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inner == nil {
+		return nil, nil
+	}
+	if s.inner.state.IsFinished() {
+		return nil, nil
+	}
+	return s.inner.style.FormatState(&s.inner.state, width)
 }

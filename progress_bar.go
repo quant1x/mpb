@@ -17,8 +17,7 @@ import (
 type ProgressBar struct {
 	state *SafeBarState
 	pos   *AtomicPosition // 使用原子位置，复现 Rust 的 AtomicPosition 行为
-	// 与 Rust 中的 `Arc<Mutex<Option<Ticker>>>` 对应：使用一个带锁的槽来保存可选的 ticker
-	ticker *tickerSlot
+	// ticker 已移动到 SafeBarState 以便在克隆间共享
 }
 
 // New 创建一个指定长度的进度条。
@@ -26,7 +25,7 @@ func New(length uint64) *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(&length, NewStderrDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeak(pb)
+	registerWeakState(pb.state)
 	return pb
 }
 
@@ -35,7 +34,7 @@ func NoLength() *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(nil, NewStderrDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeak(pb)
+	registerWeakState(pb.state)
 	return pb
 }
 
@@ -44,7 +43,7 @@ func Hidden() *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(nil, NewHiddenDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeak(pb)
+	registerWeakState(pb.state)
 	return pb
 }
 
@@ -53,7 +52,7 @@ func NewWithDrawTarget(length *uint64, dt ProgressDrawTarget) *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(length, dt, pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeak(pb)
+	registerWeakState(pb.state)
 	return pb
 }
 
@@ -130,40 +129,16 @@ func (p *ProgressBar) EnableSteadyTick(interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
-	if p.ticker == nil {
-		p.ticker = &tickerSlot{}
-	}
-	p.ticker.mu.Lock()
-	defer p.ticker.mu.Unlock()
-	if p.ticker.th != nil {
-		p.ticker.th.Stop()
-	}
-	p.ticker.th = NewTickerHandle(interval, p)
+	p.state.startTicker(interval, p)
 }
 
 // DisableSteadyTick 停止后台定时器。
 func (p *ProgressBar) DisableSteadyTick() {
-	if p.ticker == nil {
-		return
-	}
-	p.ticker.mu.Lock()
-	if p.ticker.th != nil {
-		p.ticker.th.Stop()
-		p.ticker.th = nil
-	}
-	p.ticker.mu.Unlock()
+	p.state.disableTicker()
 }
 
 func (p *ProgressBar) stopTicker() {
-	if p.ticker == nil {
-		return
-	}
-	p.ticker.mu.Lock()
-	if p.ticker.th != nil {
-		p.ticker.th.Stop()
-		p.ticker.th = nil
-	}
-	p.ticker.mu.Unlock()
+	p.state.stopTicker()
 }
 
 // tick 触发一次绘制（如果没有稳定 ticker）。
@@ -230,9 +205,18 @@ func (p *ProgressBar) Index() (int, bool) { return p.state.Index() }
 // 弱引用类型
 type WeakProgressBar struct{ id uint64 }
 
-func NewWeakProgressBar() WeakProgressBar         { return WeakProgressBar{id: 0} }
-func (p *ProgressBar) Downgrade() WeakProgressBar { return WeakProgressBar{id: registerWeak(p)} }
-func (w WeakProgressBar) Upgrade() *ProgressBar   { return getWeak(w.id) }
+func NewWeakProgressBar() WeakProgressBar { return WeakProgressBar{id: 0} }
+func (p *ProgressBar) Downgrade() WeakProgressBar {
+	return WeakProgressBar{id: registerWeakState(p.state)}
+}
+func (w WeakProgressBar) Upgrade() *ProgressBar { return getWeak(w.id) }
+
+// Clone 返回一个对相同内部状态与位置的浅拷贝，语义类似 Rust 的 Arc::clone。
+func (p *ProgressBar) Clone() *ProgressBar {
+	nb := &ProgressBar{state: p.state, pos: p.pos}
+	registerWeakState(nb.state)
+	return nb
+}
 
 // 辅助包装类型：ProgressReader/Writer
 type ProgressReader struct {
@@ -286,7 +270,7 @@ func (p *ProgressBar) WithMessage(msg string) *ProgressBar {
 func (p *ProgressBar) WithPosition(pos uint64) *ProgressBar { p.SetPosition(pos); return p }
 
 // WithElapsed 链式设置已用时间（简化实现）。
-func (p *ProgressBar) WithElapsed(d time.Duration) *ProgressBar { _ = d; return p }
+func (p *ProgressBar) WithElapsed(d time.Duration) *ProgressBar { p.state.SetElapsed(d); return p }
 
 // WithFinish 链式设置完成行为。
 func (p *ProgressBar) WithFinish(f ProgressFinish) *ProgressBar { p.state.SetOnFinish(f); return p }

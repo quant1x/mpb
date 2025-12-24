@@ -39,9 +39,9 @@ func DefaultProgressStyleSpinner() ProgressStyle {
 
 func (ps *ProgressStyle) SetTabWidth(w int) { ps.tabWidth = w }
 
-// FormatState 将 ProgressState 格式化为若干行（向 lines 追加 LineType）。
-// 这是一个简化实现，支持常见占位符替换。
-func (ps *ProgressStyle) FormatState(state *ProgressState, lines *[]LineType, targetWidth int) {
+// FormatState 将 ProgressState 格式化为若干行及对应文本内容（返回 line types 与 contents）。
+// 这是一个简化实现，支持常见占位符替换并返回渲染文本，便于 DrawStateStub.contents 填充。
+func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int) ([]LineType, []string) {
 	tpl := ps.template
 	pos := state.Pos()
 	var length uint64
@@ -67,9 +67,8 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, lines *[]LineType, ta
 		tpl = strings.ReplaceAll(tpl, "{percent}", fmt.Sprintf("%.0f", pct))
 	}
 
-	// 将结果作为单行 Bar 添加
-	*lines = append(*lines, LineBar)
-	return
+	// 目前只返回单行 Bar 的类型与文本
+	return []LineType{LineBar}, []string{tpl}
 }
 
 // formatBar 返回一个字符串表示的进度条，width 为目标可用列数（近似）。
