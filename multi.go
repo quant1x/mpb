@@ -349,7 +349,7 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 	// Use a consistent frame marker for this draw invocation so draw targets
 	// and simple drawables can coordinate first-draw-per-frame behavior.
 	nowMs := now.UnixNano() / int64(time.Millisecond)
-    
+
 	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
 		pt.kind.mu.Lock()
 		pt.kind.lastFrame = nowMs
@@ -457,8 +457,40 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 
 	// NOTE: Do not trim trailing empty lines here — keep parity with Rust which
 	// relies on the draw state as assembled (no trimming).
-	dsWrap.Close()
-	_ = drawable.Draw()
+
+	// If this drawable is the aggregatedDrawable we can capture non-bar
+	// contents after drawing by providing a temporary orphan collector to
+	// DrawStateWrapperForMulti. This preserves Rust-like semantics: draw
+	// first, then Close() captures non-bar lines for persistence.
+	if agg, ok := drawable.(*aggregatedDrawable); ok {
+		var orphanContents []string
+		dsWrap = DrawStateWrapperForMulti(agg.state, &orphanContents)
+		ds = dsWrap.StatePtr
+		// ensure we pass the assembled state into the drawable's Draw path
+		_ = drawable.Draw()
+		dsWrap.Close()
+		// persist collected orphanContents into ms.orphanLines (dedupe)
+		for _, c := range orphanContents {
+			// avoid duplicate consecutive empty strings
+			if c == "" {
+				if len(ms.orphanLines) > 0 && ms.orphanLines[len(ms.orphanLines)-1] == "" {
+					continue
+				}
+				ms.orphanLines = append(ms.orphanLines, "")
+				continue
+			}
+			if ms.orphanSet == nil {
+				ms.orphanSet = map[string]bool{}
+			}
+			if ms.orphanSet[c] {
+				continue
+			}
+			ms.orphanSet[c] = true
+			ms.orphanLines = append(ms.orphanLines, c)
+		}
+	} else {
+		_ = drawable.Draw()
+	}
 
 	// remove reaped indices from state
 	for _, idx := range reapIndices {
@@ -494,50 +526,9 @@ func (ms *MultiState) println(msg string, now time.Time) (interface{}, error) {
 			}
 		}
 	}
-	// Fast-path: write message directly to underlying term-like draw target
-	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
-		pt.kind.mu.Lock()
-		var term TermLike
-		if pt.kind.variant == variantTerm && pt.kind.termTerm != nil {
-			term = pt.kind.termTerm
-		} else if pt.kind.variant == variantTermLike && pt.kind.tlInner != nil {
-			term = pt.kind.tlInner
-		}
-		if term != nil {
-			for _, c := range contents {
-				_ = term.WriteLine(c)
-			}
-			_ = term.Flush()
-			pt.kind.mu.Unlock()
-			return nil, nil
-		}
-		pt.kind.mu.Unlock()
-	}
-	// Fallback: persist as orphanLines (rare); keep previous behavior
-	for i, lt := range lines {
-		var toAdd string
-		if lt == LineEmpty {
-			toAdd = ""
-		} else {
-			if i < len(contents) {
-				toAdd = contents[i]
-			} else {
-				toAdd = ""
-			}
-		}
-		if toAdd != "" {
-			if ms.orphanSet[toAdd] {
-				continue
-			}
-			ms.orphanSet[toAdd] = true
-		} else {
-			if len(ms.orphanLines) > 0 && ms.orphanLines[len(ms.orphanLines)-1] == "" {
-				continue
-			}
-		}
-		ms.orphanLines = append(ms.orphanLines, toAdd)
-	}
-	return ms.draw(true, nil, nil, nil, now)
+	// Do not persist here; delegate to ms.draw which will capture and
+	// persist non-bar lines after drawing (Rust-like semantics).
+	return ms.draw(true, lines, contents, nil, now)
 }
 
 // drawWithExtraLines mirrors Rust MultiState::draw with extra_lines parameter

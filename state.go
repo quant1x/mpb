@@ -1,9 +1,7 @@
 package mpb
 
 import (
-	"fmt"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -656,8 +654,6 @@ func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
 
 	termWidth := int(term.Width())
 
-    
-
 	// full height needed (including orphan/text and bar lines)
 	fullHeight := visualLineCount(ds.lines, ds.contents, termWidth)
 
@@ -671,8 +667,6 @@ func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
 			}
 		}
 	}
-
-    
 
 	var realHeight VisualLines = 0
 
@@ -735,7 +729,7 @@ type Drawable interface {
 // an orphanLines slice was provided, non-bar lines are moved into orphanLines.
 type DrawStateWrapper struct {
 	StatePtr    *DrawStateStub
-	orphanLines *[]LineType
+	orphanLines *[]string
 }
 
 func (w *DrawStateWrapper) Reset() {
@@ -748,9 +742,10 @@ func (w *DrawStateWrapper) Reset() {
 // Close performs the Drop-like behavior: filters non-bar lines into orphanLines
 // and leaves only bar lines in the wrapped state.
 func (w *DrawStateWrapper) Close() {
-	if w.orphanLines == nil || w.StatePtr == nil {
+	if w.StatePtr == nil {
 		return
 	}
+	// If no orphan collector provided, simply strip non-bar lines from state
 	oldLines := w.StatePtr.lines
 	oldContents := w.StatePtr.contents
 	newLines := make([]LineType, 0, len(oldLines))
@@ -759,7 +754,15 @@ func (w *DrawStateWrapper) Close() {
 		lt := oldLines[i]
 		switch lt {
 		case LineText, LineEmpty:
-			*w.orphanLines = append(*w.orphanLines, lt)
+			if w.orphanLines != nil {
+				var content string
+				if i < len(oldContents) {
+					content = oldContents[i]
+				} else {
+					content = ""
+				}
+				*w.orphanLines = append(*w.orphanLines, content)
+			}
 		default:
 			newLines = append(newLines, lt)
 			if i < len(oldContents) {
@@ -777,7 +780,7 @@ func DrawStateWrapperForTerm(s *DrawStateStub) *DrawStateWrapper {
 	return &DrawStateWrapper{StatePtr: s, orphanLines: nil}
 }
 
-func DrawStateWrapperForMulti(s *DrawStateStub, orphan *[]LineType) *DrawStateWrapper {
+func DrawStateWrapperForMulti(s *DrawStateStub, orphan *[]string) *DrawStateWrapper {
 	return &DrawStateWrapper{StatePtr: s, orphanLines: orphan}
 }
 
