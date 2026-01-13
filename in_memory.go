@@ -3,6 +3,7 @@ package mpb
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -37,6 +38,10 @@ func (t *InMemoryTerm) Contents() string {
 	lines := make([]string, 0, t.state.height)
 	for r := 0; r < int(t.state.height); r++ {
 		line := string(t.state.buf[r])
+		// remove ANSI escape sequences that may have been written into the buffer
+		// before trimming trailing spaces so the resulting plain text is clean.
+		ansiRe := regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+		line = ansiRe.ReplaceAllString(line, "")
 		line = strings.TrimRight(line, " ")
 		lines = append(lines, line)
 	}

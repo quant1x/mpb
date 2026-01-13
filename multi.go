@@ -1,9 +1,7 @@
 package mpb
 
 import (
-	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -60,26 +58,28 @@ func (mp *MultiProgress) SetAlignment(alignment MultiProgressAlignment) {
 }
 
 func (mp *MultiProgress) Add(pb *ProgressBar) *ProgressBar {
-	return mp.internalize(InsertLocationEnd, pb)
+	return mp.internalize(InsertLocationEnd, 0, pb)
 }
 
 func (mp *MultiProgress) Insert(index int, pb *ProgressBar) *ProgressBar {
-	// simplified: ignore index and append
-	return mp.internalize(InsertLocationEnd, pb)
+	return mp.internalize(InsertLocationIndex, index, pb)
 }
 
 func (mp *MultiProgress) InsertFromBack(index int, pb *ProgressBar) *ProgressBar {
-	// simplified: ignore index and append
-	return mp.internalize(InsertLocationEnd, pb)
+	return mp.internalize(InsertLocationIndexFromBack, index, pb)
 }
 
 func (mp *MultiProgress) InsertBefore(before *ProgressBar, pb *ProgressBar) *ProgressBar {
-	// simplified: append
+	if idx, ok := before.Index(); ok {
+		return mp.internalize(InsertLocationBefore, idx, pb)
+	}
 	return mp.Add(pb)
 }
 
 func (mp *MultiProgress) InsertAfter(after *ProgressBar, pb *ProgressBar) *ProgressBar {
-	// simplified: append
+	if idx, ok := after.Index(); ok {
+		return mp.internalize(InsertLocationAfter, idx, pb)
+	}
 	return mp.Add(pb)
 }
 
@@ -90,17 +90,50 @@ func (mp *MultiProgress) Remove(pb *ProgressBar) {
 	}
 }
 
-func (mp *MultiProgress) internalize(loc InsertLocation, pb *ProgressBar) *ProgressBar {
+func (mp *MultiProgress) internalize(loc InsertLocation, pos int, pb *ProgressBar) *ProgressBar {
 	mp.state.mu.Lock()
-	idx := mp.state.insert(loc)
+	idx := mp.state.insertWithPos(loc, pos)
 	// register this ProgressBar's SafeBarState in members
 	if idx >= 0 && idx < len(mp.state.members) {
 		mp.state.members[idx].sb = pb.state
 	}
-	// ensure the bar draws into multi draw target so aggregation works
-	pb.SetDrawTarget(mp.state.draw_target)
+	// ensure the bar draws into per-bar remote draw target so multi can identify it
+	pb.SetDrawTarget(NewRemoteDrawTarget(mp.state, idx))
 	mp.state.mu.Unlock()
 	return pb
+}
+
+// remoteDrawTarget is a per-bar draw target that forwards aggregate draw requests
+// to the owning MultiState while exposing remote information.
+type remoteDrawTarget struct {
+	ms  *MultiState
+	idx int
+}
+
+func NewRemoteDrawTarget(ms *MultiState, idx int) ProgressDrawTarget {
+	return &remoteDrawTarget{ms: ms, idx: idx}
+}
+
+func (r *remoteDrawTarget) IsHidden() bool { return r.ms.draw_target.IsHidden() }
+func (r *remoteDrawTarget) IsStderr() bool { return r.ms.draw_target.IsStderr() }
+func (r *remoteDrawTarget) Width() *uint16 { return r.ms.draw_target.Width() }
+func (r *remoteDrawTarget) Remote() (*RemoteStub, int, bool) {
+	return &RemoteStub{ms: r.ms}, r.idx, true
+}
+func (r *remoteDrawTarget) Disconnect(now time.Time)     { /* no-op */ }
+func (r *remoteDrawTarget) Drawable(force bool) Drawable { return nil }
+func (r *remoteDrawTarget) AdjustLastLineCount(adjust LineAdjust) {
+	r.ms.draw_target.AdjustLastLineCount(adjust)
+}
+
+func (r *remoteDrawTarget) AggregateDrawBar(b *BarState, force bool, now time.Time) error {
+	_, err := r.ms.draw(force, nil, nil, b, now)
+	return err
+}
+
+func (r *remoteDrawTarget) AggregateDrawOrigin(originLines []LineType, originContents []string, b *BarState, force bool, now time.Time) error {
+	_, err := r.ms.draw(force, originLines, originContents, b, now)
+	return err
 }
 
 func (mp *MultiProgress) Println(msg string) error {
@@ -139,6 +172,7 @@ type MultiState struct {
 	draw_target      ProgressDrawTarget
 	alignment        MultiProgressAlignment
 	orphanLines      []string
+	orphanSet        map[string]bool
 	zombieLinesCount VisualLines
 }
 
@@ -150,6 +184,7 @@ func NewMultiState(dt ProgressDrawTarget) *MultiState {
 		draw_target:      dt,
 		alignment:        MultiProgressAlignmentTop,
 		orphanLines:      []string{},
+		orphanSet:        map[string]bool{},
 		zombieLinesCount: VisualLines(0),
 	}
 	// wrap the provided draw target so MultiState can aggregate per-bar draws
@@ -190,6 +225,12 @@ func (m *multiDrawTarget) SetMoveCursor(move bool) {
 	}
 }
 
+func (m *multiDrawTarget) AdjustLastLineCount(adjust LineAdjust) {
+	if setter, ok := m.inner.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
+		setter.AdjustLastLineCount(adjust)
+	}
+}
+
 // AggregateDrawBar triggers an aggregated draw for the whole MultiState.
 func (m *multiDrawTarget) AggregateDrawBar(b *BarState, force bool, now time.Time) error {
 	_, err := m.ms.draw(force, nil, nil, b, now)
@@ -209,53 +250,59 @@ type aggregatedDrawable struct {
 	mdt   *multiDrawTarget
 }
 
-func (a *aggregatedDrawable) State() *DrawStateStub { return a.state }
+func (a *aggregatedDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(a.state) }
 
 func (a *aggregatedDrawable) Draw() error {
 	ds := a.state
 	contents := ds.contents
-	newLen := len(contents)
+	// (alignment handling will be applied in the fast-path using concrete progressDrawTarget)
 
 	// Prefer to use concrete progressDrawTarget fast path when available
 	if pt, ok := a.mdt.inner.(*progressDrawTarget); ok {
-		out := os.Stderr
-		pt.mu.Lock()
-		prevHeight := pt.lastHeight
-		if prevHeight > 0 {
-			fmt.Fprintf(out, "\x1b[%dA", prevHeight)
-		}
-		var sb strings.Builder
-		for i := 0; i < newLen; i++ {
-			sb.WriteString("\x1b[2K")
-			sb.WriteString(contents[i])
-			sb.WriteString("\n")
-		}
-		pt.frameLines += newLen
-		if prevHeight > pt.frameLines {
-			rem := prevHeight - pt.frameLines
-			for i := 0; i < rem; i++ {
-				sb.WriteString("\x1b[2K\n")
+		pt.kind.mu.Lock()
+		// Delegate entire frame drawing to DrawStateStub.drawToTerm to match Rust behavior.
+		// Handle both Term and TermLike variants so InMemoryTerm (term-like)
+		// is used when provided instead of defaulting to stderr.
+		if pt.kind.variant == variantTerm {
+			var term TermLike
+			if pt.kind.termTerm != nil {
+				term = pt.kind.termTerm
+			} else {
+				term = NewStdTermWithWriter(os.Stderr)
 			}
-			pt.lastHeight = pt.frameLines
-		} else {
-			pt.lastHeight = pt.frameLines
+			_ = ds.drawToTerm(term, &pt.kind.termLastLineCount)
+			pt.kind.frameLines = pt.kind.termLastLineCount.AsInt()
+			pt.kind.mu.Unlock()
+			return nil
 		}
-		sb.WriteString("\x1b[0J")
-		_, _ = out.WriteString(sb.String())
-		pt.mu.Unlock()
-		return nil
+		if pt.kind.variant == variantTermLike {
+			// use tlInner and tlLastLineCount
+			var term TermLike
+			if pt.kind.tlInner != nil {
+				term = pt.kind.tlInner
+			} else {
+				term = NewStdTermWithWriter(os.Stderr)
+			}
+			_ = ds.drawToTerm(term, &pt.kind.tlLastLineCount)
+			pt.kind.frameLines = pt.kind.tlLastLineCount.AsInt()
+			pt.kind.mu.Unlock()
+			return nil
+		}
+		pt.kind.mu.Unlock()
 	}
 
 	// Fallback: populate inner drawable state and call its Draw()
 	if a.mdt.inner != nil {
 		inner := a.mdt.inner.Drawable(false)
 		if inner != nil {
-			ids := inner.State()
+			idsWrap := inner.State()
+			ids := idsWrap.StatePtr
 			ids.lines = ids.lines[:0]
 			ids.contents = ids.contents[:0]
 			for _, c := range contents {
 				ids.contents = append(ids.contents, c)
 			}
+			idsWrap.Close()
 			_ = inner.Draw()
 		}
 	}
@@ -274,16 +321,79 @@ func (ms *MultiState) markZombie(index int) {
 	if index < 0 || index >= len(ms.members) {
 		return
 	}
-	ms.members[index].isZombie = true
+	// If the zombie is not the first visual bar, mark and defer
+	if len(ms.ordering) == 0 || index != ms.ordering[0] {
+		ms.members[index].isZombie = true
+		return
+	}
+
+	// compute visible line count for this member using wrap-aware visualLineCount
+	var lineCount VisualLines = VisualLines(0)
+	if wptr := ms.width(); wptr != nil {
+		if ms.members[index].sb != nil {
+			lines, contents := ms.members[index].sb.FormatForWidth(int(*wptr))
+			lineCount = visualLineCount(lines, contents, int(*wptr))
+		}
+	}
+
+	// Track total zombie lines and inform draw target not to clear them
+	ms.zombieLinesCount = ms.zombieLinesCount + lineCount
+	if adjTarget, ok := ms.draw_target.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
+		adjTarget.AdjustLastLineCount(LineAdjust{Kind: LineAdjustKeep, Count: lineCount})
+	}
+
+	ms.removeIdx(index)
 }
 
 func (ms *MultiState) draw(force bool, originLines []LineType, originContents []string, origin *BarState, now time.Time) (interface{}, error) {
-	// Aggregate all orphan lines and member bar renderings into a single drawable
+	// Use a consistent frame marker for this draw invocation so draw targets
+	// and simple drawables can coordinate first-draw-per-frame behavior.
+	nowMs := now.UnixNano() / int64(time.Millisecond)
+    
+	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
+		pt.kind.mu.Lock()
+		pt.kind.lastFrame = nowMs
+		pt.kind.mu.Unlock()
+	}
+	// Reap consecutive zombies from head of ordering
+	var reapIndices []int
+	var adjust VisualLines = 0
+	for _, index := range ms.ordering {
+		member := ms.members[index]
+		if !member.isZombie {
+			break
+		}
+		var lineCount VisualLines = VisualLines(0)
+		if member.sb != nil {
+			if wptr := ms.width(); wptr != nil {
+				lines, contents := member.sb.FormatForWidth(int(*wptr))
+				lineCount = visualLineCount(lines, contents, int(*wptr))
+			}
+		}
+		// Track totals exactly as Rust: add to zombieLinesCount and to adjust
+		ms.zombieLinesCount = ms.zombieLinesCount + lineCount
+		adjust = adjust + lineCount
+		reapIndices = append(reapIndices, index)
+	}
+
+	// If this draw is due to a println/originLines, then clear all zombie lines
+	if originLines != nil {
+		if adjTarget, ok := ms.draw_target.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
+			adjTarget.AdjustLastLineCount(LineAdjust{Kind: LineAdjustClear, Count: ms.zombieLinesCount})
+		}
+		ms.zombieLinesCount = VisualLines(0)
+	}
+
+	// orphan visual lines count (simple length-based approximation)
+	orphanVisual := VisualLines(len(ms.orphanLines))
+	force = force || (orphanVisual > VisualLines(0))
+
 	drawable := ms.draw_target.Drawable(force)
 	if drawable == nil {
 		return nil, nil
 	}
-	ds := drawable.State()
+	dsWrap := drawable.State()
+	ds := dsWrap.StatePtr
 	ds.lines = ds.lines[:0]
 	ds.contents = ds.contents[:0]
 
@@ -292,6 +402,15 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 	var width int
 	if wptr != nil {
 		width = int(*wptr)
+	}
+
+	// set drawable state alignment and move_cursor so Draw() can honor them
+	ds.alignment = ms.alignment
+	// query underlying concrete draw target for move-cursor mode when available
+	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
+		ds.move_cursor = pt.IsMoveCursor()
+	} else {
+		ds.move_cursor = false
 	}
 
 	// first, orphanLines (printed above bars)
@@ -336,30 +455,185 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 		}
 	}
 
-	// perform a single draw
-	// trim trailing empty lines to avoid emitting unnecessary blank lines
-	for len(ds.contents) > 0 {
-		last := ds.contents[len(ds.contents)-1]
-		if last == "" {
-			ds.contents = ds.contents[:len(ds.contents)-1]
-			ds.lines = ds.lines[:len(ds.lines)-1]
-			continue
-		}
-		break
-	}
+	// NOTE: Do not trim trailing empty lines here — keep parity with Rust which
+	// relies on the draw state as assembled (no trimming).
+	dsWrap.Close()
 	_ = drawable.Draw()
+
+	// remove reaped indices from state
+	for _, idx := range reapIndices {
+		ms.removeIdx(idx)
+	}
+
+	// If this was not a println (originLines == nil), we need to tell draw target
+	// to keep the zombie lines count for next draw
+	if originLines == nil {
+		if adjTarget, ok := ms.draw_target.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
+			adjTarget.AdjustLastLineCount(LineAdjust{Kind: LineAdjustKeep, Count: adjust})
+		}
+	}
+
 	return nil, nil
 }
 
 func (ms *MultiState) println(msg string, now time.Time) (interface{}, error) {
+	// Convert message to LineType slice (like Rust's println implementation)
+	var lines []LineType
+	var contents []string
 	if msg == "" {
-		ms.orphanLines = append(ms.orphanLines, "")
+		lines = append(lines, LineEmpty)
+		contents = append(contents, "")
 	} else {
 		for _, l := range splitLines(msg) {
-			ms.orphanLines = append(ms.orphanLines, l)
+			if l == "" {
+				lines = append(lines, LineEmpty)
+				contents = append(contents, "")
+			} else {
+				lines = append(lines, LineText)
+				contents = append(contents, l)
+			}
 		}
 	}
-	return ms.draw(false, nil, nil, nil, now)
+	// Fast-path: write message directly to underlying term-like draw target
+	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
+		pt.kind.mu.Lock()
+		var term TermLike
+		if pt.kind.variant == variantTerm && pt.kind.termTerm != nil {
+			term = pt.kind.termTerm
+		} else if pt.kind.variant == variantTermLike && pt.kind.tlInner != nil {
+			term = pt.kind.tlInner
+		}
+		if term != nil {
+			for _, c := range contents {
+				_ = term.WriteLine(c)
+			}
+			_ = term.Flush()
+			pt.kind.mu.Unlock()
+			return nil, nil
+		}
+		pt.kind.mu.Unlock()
+	}
+	// Fallback: persist as orphanLines (rare); keep previous behavior
+	for i, lt := range lines {
+		var toAdd string
+		if lt == LineEmpty {
+			toAdd = ""
+		} else {
+			if i < len(contents) {
+				toAdd = contents[i]
+			} else {
+				toAdd = ""
+			}
+		}
+		if toAdd != "" {
+			if ms.orphanSet[toAdd] {
+				continue
+			}
+			ms.orphanSet[toAdd] = true
+		} else {
+			if len(ms.orphanLines) > 0 && ms.orphanLines[len(ms.orphanLines)-1] == "" {
+				continue
+			}
+		}
+		ms.orphanLines = append(ms.orphanLines, toAdd)
+	}
+	return ms.draw(true, nil, nil, nil, now)
+}
+
+// drawWithExtraLines mirrors Rust MultiState::draw with extra_lines parameter
+// This is used by println to print text above all bars
+func (ms *MultiState) drawWithExtraLines(force bool, extraLines []LineType, extraContents []string, now time.Time) (interface{}, error) {
+	// Use a consistent frame marker for this draw invocation so draw targets
+	// and simple drawables can coordinate first-draw-per-frame behavior.
+	nowMs := now.UnixNano() / int64(time.Millisecond)
+	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
+		pt.kind.mu.Lock()
+		pt.kind.lastFrame = nowMs
+		pt.kind.mu.Unlock()
+	}
+
+	// Get width
+	wptr := ms.width()
+	var width int
+	if wptr != nil {
+		width = int(*wptr)
+	}
+
+	force = force || (width > 0)
+
+	drawable := ms.draw_target.Drawable(force)
+	if drawable == nil {
+		return nil, nil
+	}
+
+	dsWrap := drawable.State()
+	ds := dsWrap.StatePtr
+	ds.lines = ds.lines[:0]
+	ds.contents = ds.contents[:0]
+
+	// Set alignment and move_cursor from draw target
+	ds.alignment = ms.alignment
+	if pt, ok := ms.draw_target.(*progressDrawTarget); ok {
+		ds.move_cursor = pt.IsMoveCursor()
+	} else {
+		ds.move_cursor = false
+	}
+
+	// Extra lines come from println calls (appear above all bars)
+	// They are provided for this draw only and MUST NOT mutate ms.orphanLines
+	// extraLines and extraContents are parallel slices. First render extra
+	// lines for this frame, then render persistent orphanLines.
+	for i, lt := range extraLines {
+		if lt == LineEmpty {
+			ds.lines = append(ds.lines, LineEmpty)
+			ds.contents = append(ds.contents, "")
+		} else {
+			if i < len(extraContents) {
+				ds.lines = append(ds.lines, LineText)
+				ds.contents = append(ds.contents, extraContents[i])
+			} else {
+				ds.lines = append(ds.lines, LineEmpty)
+				ds.contents = append(ds.contents, "")
+			}
+		}
+	}
+
+	// Then, persistent orphanLines (printed above bars)
+	for _, ol := range ms.orphanLines {
+		if ol == "" {
+			ds.lines = append(ds.lines, LineEmpty)
+			ds.contents = append(ds.contents, "")
+		} else {
+			ds.lines = append(ds.lines, LineText)
+			ds.contents = append(ds.contents, ol)
+		}
+	}
+
+	// then, each member in ordering
+	for _, idx := range ms.ordering {
+		if idx < 0 || idx >= len(ms.members) {
+			continue
+		}
+		m := ms.members[idx]
+		if m.isZombie || m.sb == nil {
+			continue
+		}
+		if wptr != nil {
+			lines, contents := m.sb.FormatForWidth(width)
+			for _, lt := range lines {
+				ds.lines = append(ds.lines, lt)
+			}
+			for _, c := range contents {
+				ds.contents = append(ds.contents, c)
+			}
+		}
+	}
+
+	// Do not trim trailing empty lines (keep parity with Rust)
+	dsWrap.Close()
+	_ = drawable.Draw()
+
+	return nil, nil
 }
 
 func splitLines(s string) []string {
@@ -380,11 +654,26 @@ func splitLines(s string) []string {
 }
 
 func (ms *MultiState) suspend(f func() interface{}, now time.Time) interface{} {
-	return f()
+	// Hide all progress bars (clear), run f while holding lock, then redraw
+	// Note: callers generally hold ms.mu when invoking suspend; replicate behavior conservatively.
+	_, _ = ms.clear(now)
+	ret := f()
+	_, _ = ms.draw(true, nil, nil, nil, time.Now())
+	return ret
 }
 
 func (ms *MultiState) clear(now time.Time) (interface{}, error) {
+	// Try to obtain a drawable and clear it. Also clear zombie counter.
+	if drawable := ms.draw_target.Drawable(true); drawable != nil {
+		// Let drawable handle clearing and adjust last line count
+		drawable.Clear()
+		if adjTarget, ok := ms.draw_target.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
+			adjTarget.AdjustLastLineCount(LineAdjust{Kind: LineAdjustClear, Count: ms.zombieLinesCount})
+		}
+		ms.zombieLinesCount = VisualLines(0)
+	}
 	ms.orphanLines = nil
+	ms.orphanSet = map[string]bool{}
 	return nil, nil
 }
 
@@ -402,28 +691,78 @@ const (
 	InsertLocationBefore
 )
 
-func (ms *MultiState) insert(loc InsertLocation) int {
+func (ms *MultiState) insertWithPos(loc InsertLocation, pos int) int {
+	var idx int
 	if len(ms.freeSet) > 0 {
-		idx := ms.freeSet[len(ms.freeSet)-1]
+		idx = ms.freeSet[len(ms.freeSet)-1]
 		ms.freeSet = ms.freeSet[:len(ms.freeSet)-1]
 		ms.members[idx] = MultiStateMember{}
-		ms.ordering = append(ms.ordering, idx)
-		return idx
+	} else {
+		ms.members = append(ms.members, MultiStateMember{})
+		idx = len(ms.members) - 1
 	}
-	ms.members = append(ms.members, MultiStateMember{})
-	idx := len(ms.members) - 1
-	ms.ordering = append(ms.ordering, idx)
+
+	switch loc {
+	case InsertLocationEnd:
+		ms.ordering = append(ms.ordering, idx)
+	case InsertLocationIndex:
+		if pos < 0 {
+			pos = 0
+		}
+		if pos > len(ms.ordering) {
+			pos = len(ms.ordering)
+		}
+		ms.ordering = append(ms.ordering[:pos], append([]int{idx}, ms.ordering[pos:]...)...)
+	case InsertLocationIndexFromBack:
+		// position counted from back
+		p := len(ms.ordering) - pos
+		if p < 0 {
+			p = 0
+		}
+		if p > len(ms.ordering) {
+			p = len(ms.ordering)
+		}
+		ms.ordering = append(ms.ordering[:p], append([]int{idx}, ms.ordering[p:]...)...)
+	case InsertLocationAfter:
+		// pos is index of after
+		for i, v := range ms.ordering {
+			if v == pos {
+				ms.ordering = append(ms.ordering[:i+1], append([]int{idx}, ms.ordering[i+1:]...)...)
+				goto done
+			}
+		}
+		// fallback: append
+		ms.ordering = append(ms.ordering, idx)
+	case InsertLocationBefore:
+		for i, v := range ms.ordering {
+			if v == pos {
+				ms.ordering = append(ms.ordering[:i], append([]int{idx}, ms.ordering[i:]...)...)
+				goto done
+			}
+		}
+		ms.ordering = append(ms.ordering, idx)
+	}
+done:
 	return idx
 }
 
 func (ms *MultiState) removeIdx(idx int) {
+	// if already removed, no-op
+	for _, v := range ms.freeSet {
+		if v == idx {
+			return
+		}
+	}
+
+	ms.members[idx] = MultiStateMember{}
+	ms.freeSet = append(ms.freeSet, idx)
+	// remove from ordering
 	for i, v := range ms.ordering {
 		if v == idx {
 			ms.ordering = append(ms.ordering[:i], ms.ordering[i+1:]...)
 			break
 		}
 	}
-	ms.freeSet = append(ms.freeSet, idx)
 }
 
 func (ms *MultiState) len() int { return len(ms.members) - len(ms.freeSet) }

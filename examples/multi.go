@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -10,9 +12,43 @@ import (
 )
 
 func main() {
-	m := mpb.NewMultiProgress()
+	// seed the RNG to mirror Rust's thread-local RNG behavior
+	rand.Seed(time.Now().UnixNano())
+	capture := flag.Bool("capture", false, "write plain-text capture to examples/multi_capture.out")
+	flag.Parse()
 
-	sty := mpb.DefaultProgressStyleBar()
+	var m *mpb.MultiProgress
+	var memTerm *mpb.InMemoryTerm
+	var outFile *os.File
+	if *capture {
+		// create capture file but do not redirect stdout/stderr; instead
+		// use an InMemoryTerm as draw target so no ANSI/cursor control
+		// sequences are emitted. We'll write the captured plain text
+		// to the file at the end.
+		var err error
+		outFile, err = os.Create("examples/multi_capture.out")
+		if err != nil {
+			panic(err)
+		}
+		// choose sufficiently large rows/cols to avoid truncation
+		memTerm = mpb.NewInMemoryTerm(2000, 200)
+		m = mpb.WithDrawTarget(mpb.NewInMemoryDrawTarget(memTerm))
+		defer func() {
+			// flush captured contents (plain text) to file
+			if outFile != nil {
+				_, _ = outFile.WriteString(memTerm.Contents())
+				_ = outFile.Close()
+			}
+		}()
+	} else {
+		m = mpb.NewMultiProgress()
+	}
+
+	sty, err := mpb.ProgressStyleWithTemplate("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+	if err != nil {
+		panic(err)
+	}
+	sty = sty.ProgressChars("##-")
 
 	n := 200
 	pb := m.Add(mpb.New(uint64(n)))
@@ -26,11 +62,13 @@ func main() {
 	pb3 := m.InsertAfter(pb2, mpb.New(1024))
 	pb3.SetStyle(sty)
 
-	m.Println("starting!")
+	if err := m.Println("starting!"); err != nil {
+		panic(err)
+	}
 
 	var wg sync.WaitGroup
 
-	// background worker for pb3
+	// background worker for pb3 (faster)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -39,7 +77,9 @@ func main() {
 			pb3.WithMessage("item #" + strconv.Itoa(i+1))
 			pb3.Inc(1)
 		}
-		m.Println("pb3 is done!")
+		if err := m.Println("pb3 is done!"); err != nil {
+			panic(err)
+		}
 		pb3.FinishWithMessage("done")
 	}()
 
@@ -52,12 +92,14 @@ func main() {
 		}
 		pb.Inc(1)
 		innerWg.Add(1)
+		// capture pb2 into a local variable for the goroutine (mirror Rust's clone)
+		pb2copy := pb2
 		go func() {
 			defer innerWg.Done()
 			// random sleep between 1s and 5s
-			dur := time.Duration(1+rand.Intn(5)) * time.Second
+			dur := time.Duration(1000+rand.Intn(4000)) * time.Millisecond
 			time.Sleep(dur)
-			pb2.Inc(1)
+			pb2copy.Inc(1)
 		}()
 	}
 
@@ -65,5 +107,7 @@ func main() {
 	innerWg.Wait()
 	wg.Wait()
 	pb2.FinishWithMessage("all jobs done")
-	m.Clear()
+	if err := m.Clear(); err != nil {
+		panic(err)
+	}
 }

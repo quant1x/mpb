@@ -1,110 +1,285 @@
 package mpb
 
 import (
-	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
+
+// RateLimiter mirrors the Rust implementation: interval in milliseconds,
+// a capacity allowing occasional bursts, and a timestamp of the previous
+// allowance calculation.
+type RateLimiter struct {
+	interval uint16 // milliseconds
+	capacity uint8
+	prev     time.Time
+}
+
+const maxBurst = 20
+
+// newRateLimiter creates a RateLimiter with the desired refresh rate per second.
+func newRateLimiter(rate uint8) *RateLimiter {
+	if rate == 0 {
+		return &RateLimiter{interval: 1000, capacity: uint8(maxBurst), prev: time.Now()}
+	}
+	return &RateLimiter{interval: uint16(1000 / int(rate)), capacity: uint8(maxBurst), prev: time.Now()}
+}
+
+// allow returns true if a draw is allowed at the provided time. It mirrors
+// the Rust RateLimiter::allow semantics including burst handling.
+func (r *RateLimiter) allow(now time.Time) bool {
+	if now.Before(r.prev) {
+		return false
+	}
+
+	elapsed := now.Sub(r.prev)
+
+	if r.capacity == 0 && elapsed < time.Duration(r.interval)*time.Millisecond {
+		return false
+	}
+
+	// Calculate how many intervals have passed and the remainder in nanoseconds
+	newIntervals := elapsed.Milliseconds() / int64(r.interval)
+	remainder := elapsed.Nanoseconds() % (int64(r.interval) * 1_000_000)
+
+	// Update capacity: add newIntervals, subtract one for this allowance
+	var cap uint64 = uint64(r.capacity)
+	if newIntervals > 0 {
+		cap = cap + uint64(newIntervals) - 1
+	} else {
+		// no new intervals, just consume one
+		if cap > 0 {
+			cap = cap - 1
+		} else {
+			// cap == 0 and elapsed was >= interval handled earlier
+			// but fallthrough to set prev and return true
+		}
+	}
+	if cap > uint64(maxBurst) {
+		cap = uint64(maxBurst)
+	}
+	r.capacity = uint8(cap)
+
+	// Store prev adjusted by remainder so timing stays aligned with Rust's logic
+	r.prev = now.Add(-time.Duration(remainder) * time.Nanosecond)
+	return true
+}
 
 // 简化版 draw_target 实现，替代 state.go 中的占位 simpleDrawTarget。
 // 提供 ProgressDrawTarget 的基本实现以及 Drawable 对象，便于增量迁移。
 
 type progressDrawTarget struct {
+	kind targetKind
+}
+
+// internal holder for variant-specific data. This groups all
+// implementation details under a single `kind` field so the
+// external shape of `progressDrawTarget` mirrors the Rust
+// `ProgressDrawTarget { kind: TargetKind }` abstraction.
+type targetKind struct {
+	variant targetVariant // tag for which variant this kind represents
+	// common metadata
 	hidden bool
 	stderr bool
 	width  *uint16
-	term   TermLike
 	mu     sync.Mutex
-	// 上次完整绘制高度（行数），用于下一次上移覆盖
-	lastHeight int
-	// 当前帧标记（毫秒）用于多 Drawable 协调
-	lastFrame int64
-	// 当前帧已写入行数（累加）
+	// Aggregation helpers
 	frameLines int
+	// frame marker for per-frame coordination
+	lastFrame int64
+
+	// Term variant fields
+	termTerm          TermLike
+	termLastLineCount VisualLines
+	termRateLimiter   *RateLimiter
+	termDrawState     DrawStateStub
+
+	// TermLike variant fields
+	tlInner         TermLike
+	tlLastLineCount VisualLines
+	tlRateLimiter   *RateLimiter
+	tlDrawState     DrawStateStub
+
+	// Multi variant fields
+	multiState *MultiState
+	multiIdx   int
 }
 
-// VisualLines 是一个简化的行计数类型（占位实现）。
-type VisualLines int
+type targetVariant int
 
-func (p *progressDrawTarget) IsHidden() bool { return p.hidden }
-func (p *progressDrawTarget) IsStderr() bool { return p.stderr }
-func (p *progressDrawTarget) Width() *uint16 { return p.width }
+const (
+	variantTerm targetVariant = iota
+	variantMulti
+	variantHidden
+	variantTermLike
+)
+
+func (p *progressDrawTarget) IsHidden() bool { return p.kind.hidden }
+func (p *progressDrawTarget) IsStderr() bool { return p.kind.stderr }
+func (p *progressDrawTarget) Width() *uint16 { return p.kind.width }
 
 func (p *progressDrawTarget) Remote() (*RemoteStub, int, bool) { return nil, 0, false }
 
 func (p *progressDrawTarget) Disconnect(now time.Time) {}
 
+func (p *progressDrawTarget) AdjustLastLineCount(adjust LineAdjust) {
+	p.kind.mu.Lock()
+	defer p.kind.mu.Unlock()
+	switch adjust.Kind {
+	case LineAdjustClear:
+		if p.kind.variant == variantTerm {
+			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingAdd(adjust.Count)
+		} else if p.kind.variant == variantTermLike {
+			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingAdd(adjust.Count)
+		}
+	case LineAdjustKeep:
+		if p.kind.variant == variantTerm {
+			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingSub(adjust.Count)
+		} else if p.kind.variant == variantTermLike {
+			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingSub(adjust.Count)
+		}
+	}
+}
+
 // Drawable 返回一个实现 state.go 中 Drawable 接口的对象。
 func (p *progressDrawTarget) Drawable(force bool) Drawable {
-	ds := &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}
-	return &simpleDrawable{state: ds, width: p.width, owner: p}
+	// Return a drawable that matches the configured variant semantics.
+	switch p.kind.variant {
+	case variantTerm:
+		return &termDrawable{state: &p.kind.termDrawState, width: p.kind.width, term: p.kind.termTerm, lastCount: &p.kind.termLastLineCount}
+	case variantTermLike:
+		return &termLikeDrawable{state: &p.kind.tlDrawState, width: p.kind.width, termLike: p.kind.tlInner, lastCount: &p.kind.tlLastLineCount}
+	case variantHidden:
+		return nil
+	default:
+		// fallback to simple drawable
+		ds := &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}
+		return &simpleDrawable{state: ds, width: p.kind.width, owner: p}
+	}
 }
+
+// termDrawable implements Drawable for the Term variant.
+type termDrawable struct {
+	state     *DrawStateStub
+	width     *uint16
+	term      TermLike
+	lastCount *VisualLines
+}
+
+func (t *termDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
+func (t *termDrawable) Draw() error {
+	// delegate to DrawStateStub.drawToTerm
+	return t.state.drawToTerm(t.term, t.lastCount)
+}
+func (t *termDrawable) Clear() error {
+	// Reset draw state and delegate to centralized draw logic so that
+	// clearing actually emits terminal clear sequences (parity with Rust).
+	t.state.lines = t.state.lines[:0]
+	t.state.contents = t.state.contents[:0]
+	return t.state.drawToTerm(t.term, t.lastCount)
+}
+func (t *termDrawable) Width() *uint16 { return t.width }
+
+// termLikeDrawable implements Drawable for the TermLike variant.
+type termLikeDrawable struct {
+	state     *DrawStateStub
+	width     *uint16
+	termLike  TermLike
+	lastCount *VisualLines
+}
+
+func (t *termLikeDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
+func (t *termLikeDrawable) Draw() error {
+	return t.state.drawToTerm(t.termLike, t.lastCount)
+}
+func (t *termLikeDrawable) Clear() error {
+	t.state.lines = t.state.lines[:0]
+	t.state.contents = t.state.contents[:0]
+	return t.state.drawToTerm(t.termLike, t.lastCount)
+}
+func (t *termLikeDrawable) Width() *uint16 { return t.width }
 
 // SetMoveCursor 为进度目标设置是否使用移动光标而不是清行（简化实现）。
-func (p *progressDrawTarget) SetMoveCursor(move bool) { /* no-op */ }
-
-type simpleDrawable struct {
-	state      *DrawStateStub
-	width      *uint16
-	lastDraw   time.Time
-	owner      *progressDrawTarget
-	lastHeight int
+func (p *progressDrawTarget) SetMoveCursor(move bool) {
+	p.kind.mu.Lock()
+	switch p.kind.variant {
+	case variantTerm:
+		p.kind.termDrawState.move_cursor = move
+	case variantTermLike:
+		p.kind.tlDrawState.move_cursor = move
+	default:
+		// no-op for other variants
+	}
+	p.kind.mu.Unlock()
 }
 
-func (d *simpleDrawable) State() *DrawStateStub { return d.state }
+func (p *progressDrawTarget) IsMoveCursor() bool {
+	p.kind.mu.Lock()
+	var v bool
+	switch p.kind.variant {
+	case variantTerm:
+		v = p.kind.termDrawState.move_cursor
+	case variantTermLike:
+		v = p.kind.tlDrawState.move_cursor
+	default:
+		v = false
+	}
+	p.kind.mu.Unlock()
+	return v
+}
+
+type simpleDrawable struct {
+	state           *DrawStateStub
+	width           *uint16
+	lastDraw        time.Time
+	owner           *progressDrawTarget
+	lastHeight      int
+	lastFrameMarker int64
+}
+
+func (d *simpleDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(d.state) }
 func (d *simpleDrawable) Draw() error {
 	d.lastDraw = time.Now()
 	if d.owner != nil {
-		if d.owner.term != nil {
+		if d.owner.kind.termTerm != nil {
 			for _, line := range d.state.contents {
-				_ = d.owner.term.WriteLine(line)
+				_ = d.owner.kind.termTerm.WriteLine(line)
 			}
-			_ = d.owner.term.Flush()
+			_ = d.owner.kind.termTerm.Flush()
 			return nil
 		}
 		// fallback: write to stderr so examples show output
 		out := os.Stderr
-		lines := d.state.contents
-		newLen := len(lines)
 		// 使用 owner 的帧协调：仅在帧的第一个 Drawable 上移光标一次
-		nowMs := time.Now().UnixNano() / int64(time.Millisecond)
-		d.owner.mu.Lock()
-		prevHeight := d.owner.lastHeight
-		if d.owner.lastFrame != nowMs {
-			// 新帧，先上移到上次绘制的起始行
-			if prevHeight > 0 {
-				fmt.Fprintf(out, "\x1b[%dA", prevHeight)
+		d.owner.kind.mu.Lock()
+		currentMarker := d.owner.kind.lastFrame
+		if d.lastFrameMarker != currentMarker {
+			// First drawable in this frame: delegate to DrawStateStub.drawToTerm
+			d.lastFrameMarker = currentMarker
+			d.owner.kind.frameLines = 0
+
+			var term TermLike
+			if d.owner.kind.termTerm != nil {
+				term = d.owner.kind.termTerm
+			} else {
+				term = NewStdTermWithWriter(out)
 			}
-			d.owner.lastFrame = nowMs
-			d.owner.frameLines = 0
-		}
-		// 构建整帧输出，避免多次写入导致闪烁或行插入
-		var sb strings.Builder
-		// 写入本 Drawable 的行，逐行清除并写入新内容；没有内容的行为清空
-		for i := 0; i < newLen; i++ {
-			sb.WriteString("\x1b[2K")
-			sb.WriteString(lines[i])
-			sb.WriteString("\n")
-		}
-		d.owner.frameLines += newLen
-		// 如果前一帧比当前帧更高，需要清空多余的行以移除残留
-		if prevHeight > d.owner.frameLines {
-			rem := prevHeight - d.owner.frameLines
-			for i := 0; i < rem; i++ {
-				sb.WriteString("\x1b[2K\n")
+			// call centralized draw logic which will update per-variant last-line count
+			switch d.owner.kind.variant {
+			case variantTerm:
+				_ = d.state.drawToTerm(term, &d.owner.kind.termLastLineCount)
+				d.owner.kind.frameLines = d.owner.kind.termLastLineCount.AsInt()
+			case variantTermLike:
+				_ = d.state.drawToTerm(term, &d.owner.kind.tlLastLineCount)
+				d.owner.kind.frameLines = d.owner.kind.tlLastLineCount.AsInt()
+			default:
+				// fallback to termLastLineCount
+				_ = d.state.drawToTerm(term, &d.owner.kind.termLastLineCount)
+				d.owner.kind.frameLines = d.owner.kind.termLastLineCount.AsInt()
 			}
-			// 清空多余行后，当前可见高度应为当前帧行数
-			d.owner.lastHeight = d.owner.frameLines
-		} else {
-			d.owner.lastHeight = d.owner.frameLines
+			d.owner.kind.mu.Unlock()
+			return nil
 		}
-		// 在整帧写出后清除光标下方所有残留内容，避免终端保留旧行
-		sb.WriteString("\x1b[0J")
-		// 一次性写出整帧内容
-		_, _ = out.WriteString(sb.String())
-		d.owner.mu.Unlock()
 	}
 	return nil
 }
@@ -118,14 +293,14 @@ func (d *simpleDrawable) Width() *uint16 { return d.width }
 // 构造函数
 func NewStderrDrawTarget() ProgressDrawTarget {
 	w := uint16(80)
-	return &progressDrawTarget{hidden: false, stderr: true, width: &w, term: nil}
+	return &progressDrawTarget{kind: targetKind{variant: variantTermLike, hidden: false, stderr: true, width: &w, tlInner: NewStdTerm(), tlRateLimiter: newRateLimiter(20)}}
 }
 func NewHiddenDrawTarget() ProgressDrawTarget {
-	return &progressDrawTarget{hidden: true, stderr: false, width: nil, term: nil}
+	return &progressDrawTarget{kind: targetKind{variant: variantHidden, hidden: true, stderr: false, width: nil}}
 }
 
 // NewInMemoryDrawTarget 创建一个使用 InMemoryTerm 的 draw target（用于测试）。
 func NewInMemoryDrawTarget(t *InMemoryTerm) ProgressDrawTarget {
 	w := t.Width()
-	return &progressDrawTarget{hidden: false, stderr: false, width: &w, term: t}
+	return &progressDrawTarget{kind: targetKind{variant: variantTermLike, hidden: false, stderr: false, width: &w, tlInner: t, tlRateLimiter: newRateLimiter(20)}}
 }

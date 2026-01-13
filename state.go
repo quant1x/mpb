@@ -1,10 +1,15 @@
 package mpb
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mattn/go-runewidth"
+	"golang.org/x/text/unicode/norm"
 )
 
 // 注意：此文件按 src/state.rs 逻辑翻译，尽量一行一行对应。
@@ -144,6 +149,10 @@ func (b *BarState) SetTabWidth(tabWidth int) {
 }
 
 func (b *BarState) SetStyle(style ProgressStyle) {
+	// If the current draw target is stderr, apply stderr variant of styles to match Rust
+	if b.drawTarget != nil && b.drawTarget.IsStderr() {
+		style.SetForStderr()
+	}
 	b.style = style
 	b.style.SetTabWidth(b.tabWidth)
 }
@@ -154,8 +163,23 @@ func (b *BarState) Tick(now time.Time) {
 }
 
 // Index 返回进度条在 MultiProgress 中的索引（如果存在）。
-// 当前为增量翻译的占位实现，返回 (0, false)。
-func (b *BarState) Index() (int, bool) { return 0, false }
+func (b *BarState) Index() (int, bool) {
+	// If the draw target is a multiDrawTarget, search its ordering for this BarState
+	if md, ok := b.drawTarget.(*multiDrawTarget); ok && md != nil {
+		md.ms.mu.RLock()
+		defer md.ms.mu.RUnlock()
+		for _, idx := range md.ms.ordering {
+			if idx < 0 || idx >= len(md.ms.members) {
+				continue
+			}
+			m := md.ms.members[idx]
+			if m.sb != nil && m.sb.inner == b {
+				return idx, true
+			}
+		}
+	}
+	return 0, false
+}
 
 func (b *BarState) UpdateEstimateAndDraw(now time.Time) {
 	pos := b.state.pos.Pos()
@@ -172,7 +196,8 @@ func (b *BarState) Println(now time.Time, msg string) {
 	if drawable == nil {
 		return
 	}
-	ds := drawable.State()
+	dsWrap := drawable.State()
+	ds := dsWrap.StatePtr
 	parts := splitLines(msg)
 	if len(parts) == 0 {
 		ds.lines = append(ds.lines, LineEmpty)
@@ -191,7 +216,11 @@ func (b *BarState) Println(now time.Time, msg string) {
 
 	if w := width; w != nil {
 		if !b.state.IsFinished() {
-			lines, contents := b.style.FormatState(&b.state, int(*w))
+			isErr := false
+			if b.drawTarget != nil {
+				isErr = b.drawTarget.IsStderr()
+			}
+			lines, contents := b.style.FormatState(&b.state, int(*w), isErr)
 			ds.lines = append(ds.lines, lines...)
 			for _, c := range contents {
 				ds.contents = append(ds.contents, c)
@@ -199,6 +228,7 @@ func (b *BarState) Println(now time.Time, msg string) {
 		}
 	}
 
+	dsWrap.Close()
 	drawable.Draw()
 }
 
@@ -232,16 +262,22 @@ func (b *BarState) drawWithNow(force bool, now time.Time) error {
 		return nil
 	}
 	width := drawable.Width()
-	ds := drawable.State()
+	dsWrap := drawable.State()
+	ds := dsWrap.StatePtr
 	if width != nil {
 		if !b.state.IsFinished() {
-			lines, contents := b.style.FormatState(&b.state, int(*width))
+			isErr := false
+			if b.drawTarget != nil {
+				isErr = b.drawTarget.IsStderr()
+			}
+			lines, contents := b.style.FormatState(&b.state, int(*width), isErr)
 			ds.lines = append(ds.lines, lines...)
 			for _, c := range contents {
 				ds.contents = append(ds.contents, c)
 			}
 		}
 	}
+	dsWrap.Close()
 	drawable.Draw()
 	return nil
 }
@@ -452,6 +488,7 @@ type ProgressDrawTarget interface {
 	// 返回 (remoteState, idx, ok)
 	Remote() (*RemoteStub, int, bool)
 	Disconnect(now time.Time)
+	AdjustLastLineCount(adjust LineAdjust)
 }
 
 type DrawableStub interface {
@@ -460,23 +497,288 @@ type DrawableStub interface {
 	Clear() error
 }
 
-type RemoteStub struct{}
+// RemoteStub references a MultiState for remote operations
+type RemoteStub struct{ ms *MultiState }
 
-func (r *RemoteStub) StateWrite() *MultiStateStub { return nil }
-
-func (m *MultiStateStub) Suspend(f func() interface{}, now time.Time) interface{} { return f() }
+func (r *RemoteStub) StateWrite() *MultiStateStub { return &MultiStateStub{ms: r.ms} }
 
 // draw target 的具体实现位于 draw_target.go（增量翻译）。
-type DrawStateStub struct {
+// DrawState mirrors Rust's DrawState: it holds the lines to print,
+// the move_cursor flag and the alignment for multi progress.
+type DrawState struct {
+	// The lines to print (can contain ANSI codes)
 	lines    []LineType
 	contents []string
+	// True if we should move the cursor up when possible instead of clearing lines.
+	move_cursor bool
+	// Controls how the multi progress is aligned if some of its progress bars get removed
+	alignment MultiProgressAlignment
+}
+
+// Keep DrawStateStub as an alias for compatibility where referenced.
+type DrawStateStub = DrawState
+
+// VisualLines represents a count of visual lines (wrap-aware).
+type VisualLines int
+
+func (v VisualLines) SaturatingAdd(o VisualLines) VisualLines {
+	return VisualLines(int(v) + int(o))
+}
+
+func (v VisualLines) SaturatingSub(o VisualLines) VisualLines {
+	res := int(v) - int(o)
+	if res < 0 {
+		res = 0
+	}
+	return VisualLines(res)
+}
+
+func (v VisualLines) AsInt() int { return int(v) }
+
+func VisualLinesFromInt(i int) VisualLines {
+	if i < 0 {
+		i = 0
+	}
+	return VisualLines(i)
+}
+
+// visualLineCount computes visual height for a slice of LineType given parallel contents and a terminal width.
+func visualLineCount(lines []LineType, contents []string, width int) VisualLines {
+	var acc VisualLines = 0
+	for i := range lines {
+		var c string
+		if i < len(contents) {
+			c = contents[i]
+		} else {
+			c = ""
+		}
+		acc += wrappedHeightForContent(c, width)
+	}
+	return acc
+}
+
+// wrappedHeightForContent computes wrapped visual height for a content string.
+func wrappedHeightForContent(s string, width int) VisualLines {
+	if width <= 0 {
+		return VisualLines(1)
+	}
+	cw := measureTextWidth(s)
+	terminalLen := (cw + width - 1) / width
+	if terminalLen < 1 {
+		terminalLen = 1
+	}
+	return VisualLines(terminalLen)
+}
+
+// measureTextWidth approximates console::measure_text_width by stripping ANSI CSI sequences and returning rune count.
+func measureTextWidth(s string) int {
+	if s == "" {
+		return 0
+	}
+	// Normalize and remove certain invisible characters to better match Rust's console behavior
+	s = norm.NFKC.String(s)
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	// expand tabs to spaces (conservative)
+	s = strings.ReplaceAll(s, "\t", "    ")
+	// remove zero-width joiner/non-joiner which may affect widths in console crate
+	s = strings.ReplaceAll(s, "\u200d", "")
+	s = strings.ReplaceAll(s, "\u200c", "")
+	// strip ANSI CSI sequences
+	rs := []rune(s)
+	out := make([]rune, 0, len(rs))
+	for i := 0; i < len(rs); i++ {
+		if rs[i] == '\x1b' {
+			// skip CSI sequence
+			i++
+			if i < len(rs) && rs[i] == '[' {
+				i++
+				for i < len(rs) {
+					if (rs[i] >= 'A' && rs[i] <= 'Z') || (rs[i] >= 'a' && rs[i] <= 'z') {
+						break
+					}
+					i++
+				}
+			}
+			continue
+		}
+		out = append(out, rs[i])
+	}
+	return runewidth.StringWidth(string(out))
+}
+
+// DrawStateStub.drawToTerm implements Rust's DrawState::draw_to_term semantics
+// term: destination implementing TermLike
+// barCount: pointer to last_line_count (number of dynamic lines printed previously)
+func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
+	// move cursor / clear previous lines
+	// Note: follow Rust behavior: base branch decision on presence of `lines`,
+	// but always perform the clearing/move logic even when no new lines are present
+	// to remove previously printed dynamic lines.
+	// (no debug logging)
+
+	if len(ds.lines) > 0 && ds.move_cursor {
+		// Use saturating semantics like Rust: barCount.saturating_sub(1)
+		up := (*barCount).SaturatingSub(VisualLinesFromInt(1)).AsInt()
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
+				return err
+			}
+		}
+		if err := term.WriteStr("\r"); err != nil {
+			return err
+		}
+	} else {
+		n := (*barCount).AsInt()
+		up := (*barCount).SaturatingSub(VisualLinesFromInt(1)).AsInt()
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
+				return err
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := term.ClearLine(); err != nil {
+				return err
+			}
+			if i+1 != n {
+				if err := term.MoveCursorDown(1); err != nil {
+					return err
+				}
+			}
+		}
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
+				return err
+			}
+		}
+	}
+
+	termWidth := int(term.Width())
+
+    
+
+	// full height needed (including orphan/text and bar lines)
+	fullHeight := visualLineCount(ds.lines, ds.contents, termWidth)
+
+	// shift for bottom alignment: write blank cleared lines
+	var shift VisualLines = 0
+	if ds.alignment == MultiProgressAlignmentBottom && fullHeight < *barCount {
+		shift = (*barCount).SaturatingSub(fullHeight)
+		for i := 0; i < shift.AsInt(); i++ {
+			if err := term.WriteLine(""); err != nil {
+				return err
+			}
+		}
+	}
+
+    
+
+	var realHeight VisualLines = 0
+
+	for idx, lt := range ds.lines {
+		// find corresponding content
+		var content string
+		if idx < len(ds.contents) {
+			content = ds.contents[idx]
+		} else {
+			content = ""
+		}
+
+		lineHeight := wrappedHeightForContent(content, termWidth)
+
+		// For Bar lines we must check terminal height and may early-stop
+		if lt == LineBar {
+			if realHeight.SaturatingAdd(lineHeight).AsInt() > int(term.Height()) {
+				break
+			}
+			realHeight = realHeight.SaturatingAdd(lineHeight)
+		}
+
+		if idx != 0 {
+			if err := term.WriteLine(""); err != nil {
+				return err
+			}
+		}
+
+		if err := term.WriteStr(content); err != nil {
+			return err
+		}
+
+		if idx+1 == len(ds.lines) {
+			filler := int(lineHeight)*termWidth - measureTextWidth(content)
+			if filler > 0 {
+				if err := term.WriteStr(strings.Repeat(" ", filler)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if err := term.Flush(); err != nil {
+		return err
+	}
+
+	*barCount = realHeight.SaturatingAdd(shift)
+	return nil
 }
 
 type Drawable interface {
-	State() *DrawStateStub
+	State() *DrawStateWrapper
 	Draw() error
 	Clear() error
 	Width() *uint16
+}
+
+// DrawStateWrapper is a RAII-style wrapper around DrawStateStub used to
+// emulate Rust's DrawStateWrapper behavior: when Close() is called and
+// an orphanLines slice was provided, non-bar lines are moved into orphanLines.
+type DrawStateWrapper struct {
+	StatePtr    *DrawStateStub
+	orphanLines *[]LineType
+}
+
+func (w *DrawStateWrapper) Reset() {
+	if w.StatePtr != nil {
+		w.StatePtr.lines = w.StatePtr.lines[:0]
+		w.StatePtr.contents = w.StatePtr.contents[:0]
+	}
+}
+
+// Close performs the Drop-like behavior: filters non-bar lines into orphanLines
+// and leaves only bar lines in the wrapped state.
+func (w *DrawStateWrapper) Close() {
+	if w.orphanLines == nil || w.StatePtr == nil {
+		return
+	}
+	oldLines := w.StatePtr.lines
+	oldContents := w.StatePtr.contents
+	newLines := make([]LineType, 0, len(oldLines))
+	newContents := make([]string, 0, len(oldContents))
+	for i := 0; i < len(oldLines); i++ {
+		lt := oldLines[i]
+		switch lt {
+		case LineText, LineEmpty:
+			*w.orphanLines = append(*w.orphanLines, lt)
+		default:
+			newLines = append(newLines, lt)
+			if i < len(oldContents) {
+				newContents = append(newContents, oldContents[i])
+			} else {
+				newContents = append(newContents, "")
+			}
+		}
+	}
+	w.StatePtr.lines = newLines
+	w.StatePtr.contents = newContents
+}
+
+func DrawStateWrapperForTerm(s *DrawStateStub) *DrawStateWrapper {
+	return &DrawStateWrapper{StatePtr: s, orphanLines: nil}
+}
+
+func DrawStateWrapperForMulti(s *DrawStateStub, orphan *[]LineType) *DrawStateWrapper {
+	return &DrawStateWrapper{StatePtr: s, orphanLines: orphan}
 }
 
 type LineType int
@@ -490,7 +792,26 @@ const (
 func LineTextVal(s string) LineType { return LineText }
 func LineEmptyVal() LineType        { return LineEmpty }
 
-type MultiStateStub struct{}
+type LineAdjustKind int
+
+const (
+	LineAdjustClear LineAdjustKind = iota
+	LineAdjustKeep
+)
+
+type LineAdjust struct {
+	Kind  LineAdjustKind
+	Count VisualLines
+}
+
+// MultiStateStub with reference to actual MultiState to expose Suspend
+type MultiStateStub struct{ ms *MultiState }
+
+func (m *MultiStateStub) Suspend(f func() interface{}, now time.Time) interface{} {
+	m.ms.mu.Lock()
+	defer m.ms.mu.Unlock()
+	return m.ms.suspend(f, now)
+}
 
 // End of state.go
 
@@ -607,7 +928,7 @@ func (s *SafeBarState) Draw(force bool) error {
 	var originContents []string
 	if wptr := s.inner.drawTarget.Width(); wptr != nil {
 		if !s.inner.state.IsFinished() {
-			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr))
+			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr), s.inner.drawTarget.IsStderr())
 		}
 	}
 	s.mu.Unlock()
@@ -626,7 +947,7 @@ func (s *SafeBarState) DrawWithNow(force bool, now time.Time) error {
 	var originContents []string
 	if wptr := s.inner.drawTarget.Width(); wptr != nil {
 		if !s.inner.state.IsFinished() {
-			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr))
+			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr), s.inner.drawTarget.IsStderr())
 		}
 	}
 	s.mu.Unlock()
@@ -665,7 +986,7 @@ func (s *SafeBarState) Println(now time.Time, msg string) {
 	// formatted bar lines
 	if wptr := inner.drawTarget.Width(); wptr != nil {
 		if !inner.state.IsFinished() {
-			lines, contents := inner.style.FormatState(&inner.state, int(*wptr))
+			lines, contents := inner.style.FormatState(&inner.state, int(*wptr), inner.drawTarget.IsStderr())
 			originLines = append(originLines, lines...)
 			for _, c := range contents {
 				originContents = append(originContents, c)
@@ -795,5 +1116,9 @@ func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
 	if s.inner.state.IsFinished() {
 		return nil, nil
 	}
-	return s.inner.style.FormatState(&s.inner.state, width)
+	isErr := false
+	if s.inner != nil && s.inner.drawTarget != nil {
+		isErr = s.inner.drawTarget.IsStderr()
+	}
+	return s.inner.style.FormatState(&s.inner.state, width, isErr)
 }
