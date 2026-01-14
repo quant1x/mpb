@@ -609,46 +609,37 @@ func measureTextWidth(s string) int {
 // DrawStateStub.drawToTerm implements Rust's DrawState::draw_to_term semantics
 // term: destination implementing TermLike
 // barCount: pointer to last_line_count (number of dynamic lines printed previously)
-func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
+func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (VisualLines, error) {
 	// move cursor / clear previous lines
 	// Note: follow Rust behavior: base branch decision on presence of `lines`,
 	// but always perform the clearing/move logic even when no new lines are present
 	// to remove previously printed dynamic lines.
 	// (no debug logging)
 
-	if len(ds.lines) > 0 && ds.move_cursor {
-		// Use saturating semantics like Rust: barCount.saturating_sub(1)
-		up := (*barCount).SaturatingSub(VisualLinesFromInt(1)).AsInt()
-		if up > 0 {
-			if err := term.MoveCursorUp(up); err != nil {
-				return err
+	// Conservatively always clear previous dynamic lines and reset cursor
+	// position instead of attempting move-cursor optimization. This is
+	// slightly less efficient but avoids complex cursor-positioning bugs
+	// that can cause bars to be written to the wrong lines.
+	n := prevBarCount.AsInt()
+	up := prevBarCount.SaturatingSub(VisualLinesFromInt(1)).AsInt()
+	if up > 0 {
+		if err := term.MoveCursorUp(up); err != nil {
+			return VisualLines(0), err
+		}
+	}
+	for i := 0; i < n; i++ {
+		if err := term.ClearLine(); err != nil {
+			return VisualLines(0), err
+		}
+		if i+1 != n {
+			if err := term.MoveCursorDown(1); err != nil {
+				return VisualLines(0), err
 			}
 		}
-		if err := term.WriteStr("\r"); err != nil {
-			return err
-		}
-	} else {
-		n := (*barCount).AsInt()
-		up := (*barCount).SaturatingSub(VisualLinesFromInt(1)).AsInt()
-		if up > 0 {
-			if err := term.MoveCursorUp(up); err != nil {
-				return err
-			}
-		}
-		for i := 0; i < n; i++ {
-			if err := term.ClearLine(); err != nil {
-				return err
-			}
-			if i+1 != n {
-				if err := term.MoveCursorDown(1); err != nil {
-					return err
-				}
-			}
-		}
-		if up > 0 {
-			if err := term.MoveCursorUp(up); err != nil {
-				return err
-			}
+	}
+	if up > 0 {
+		if err := term.MoveCursorUp(up); err != nil {
+			return VisualLines(0), err
 		}
 	}
 
@@ -659,11 +650,11 @@ func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
 
 	// shift for bottom alignment: write blank cleared lines
 	var shift VisualLines = 0
-	if ds.alignment == MultiProgressAlignmentBottom && fullHeight < *barCount {
-		shift = (*barCount).SaturatingSub(fullHeight)
+	if ds.alignment == MultiProgressAlignmentBottom && fullHeight < prevBarCount {
+		shift = prevBarCount.SaturatingSub(fullHeight)
 		for i := 0; i < shift.AsInt(); i++ {
 			if err := term.WriteLine(""); err != nil {
-				return err
+				return VisualLines(0), err
 			}
 		}
 	}
@@ -689,32 +680,33 @@ func (ds *DrawState) drawToTerm(term TermLike, barCount *VisualLines) error {
 			realHeight = realHeight.SaturatingAdd(lineHeight)
 		}
 
+		// Print a new line if this is not the first line printed this tick
+		// the first line will automatically wrap due to the filler below
 		if idx != 0 {
 			if err := term.WriteLine(""); err != nil {
-				return err
+				return VisualLines(0), err
 			}
 		}
 
 		if err := term.WriteStr(content); err != nil {
-			return err
+			return VisualLines(0), err
 		}
 
 		if idx+1 == len(ds.lines) {
 			filler := int(lineHeight)*termWidth - measureTextWidth(content)
 			if filler > 0 {
 				if err := term.WriteStr(strings.Repeat(" ", filler)); err != nil {
-					return err
+					return VisualLines(0), err
 				}
 			}
 		}
 	}
 
 	if err := term.Flush(); err != nil {
-		return err
+		return VisualLines(0), err
 	}
 
-	*barCount = realHeight.SaturatingAdd(shift)
-	return nil
+	return realHeight.SaturatingAdd(shift), nil
 }
 
 type Drawable interface {
@@ -1116,7 +1108,9 @@ func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
 	if s.inner == nil {
 		return nil, nil
 	}
-	if s.inner.state.IsFinished() {
+	// Only skip formatting if the status is DoneHidden (like Rust)
+	// DoneVisible should still be displayed
+	if s.inner.state.status == statusDoneHidden {
 		return nil, nil
 	}
 	isErr := false

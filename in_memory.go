@@ -3,15 +3,20 @@ package mpb
 import (
 	"bytes"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
+
+	vte "github.com/danielgatis/go-vte"
 )
+
+// Minimal vt100 performer + parser integration using github.com/danielgatis/go-vte
+// This mirrors the Rust implementation where writes are fed into a parser which
+// dispatches actions that update an internal screen buffer.
 
 // InMemoryTerm 是一个轻量的内存终端实现（对应 src/in_memory.rs）。
 // 它维护固定大小的字符缓冲区、光标位置和操作历史，方便在测试中断言输出。
 type InMemoryTerm struct {
-	mu    sync.Mutex
 	state *inMemoryTermState
 }
 
@@ -25,24 +30,20 @@ func NewInMemoryTerm(rows uint16, cols uint16) *InMemoryTerm {
 
 // Reset 重置终端内容为初始状态。
 func (t *InMemoryTerm) Reset() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// lock the current state while replacing it to mimic Arc<Mutex<..>> behavior
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state = newInMemoryTermState(t.state.height, t.state.width)
 }
 
 // Contents 返回当前屏幕的文本内容（去除行末空白，并去掉尾部空行）。
 func (t *InMemoryTerm) Contents() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 
 	lines := make([]string, 0, t.state.height)
 	for r := 0; r < int(t.state.height); r++ {
-		line := string(t.state.buf[r])
-		// remove ANSI escape sequences that may have been written into the buffer
-		// before trimming trailing spaces so the resulting plain text is clean.
-		ansiRe := regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
-		line = ansiRe.ReplaceAllString(line, "")
-		line = strings.TrimRight(line, " ")
+		line := strings.TrimRight(string(t.state.buf[r]), " ")
 		lines = append(lines, line)
 	}
 
@@ -59,8 +60,8 @@ func (t *InMemoryTerm) Contents() string {
 
 // ContentsFormatted 返回每行后面附加重置 ANSI 序列的字节表示（行为接近原始实现）。
 func (t *InMemoryTerm) ContentsFormatted() []byte {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 
 	reset := []byte("\x1b[m")
 	var buf bytes.Buffer
@@ -82,10 +83,10 @@ func (t *InMemoryTerm) ContentsFormatted() []byte {
 
 // MovesSinceLastCheck 返回自上次检查以来的移动历史（并清空历史）。
 func (t *InMemoryTerm) MovesSinceLastCheck() string {
-	t.mu.Lock()
+	t.state.mu.Lock()
 	hist := t.state.history
 	t.state.history = nil
-	t.mu.Unlock()
+	t.state.mu.Unlock()
 
 	var b strings.Builder
 	for _, m := range hist {
@@ -99,7 +100,6 @@ func (t *InMemoryTerm) MovesSinceLastCheck() string {
 		case "Right":
 			fmt.Fprintf(&b, "Right(%d)\n", m.n)
 		case "Str":
-			// 模拟 Rust Debug 的格式化 Str("...")
 			s := strings.ReplaceAll(m.s, "\"", "\\\"")
 			fmt.Fprintf(&b, "Str(\"%s\")\n", s)
 		case "NewLine":
@@ -114,15 +114,24 @@ func (t *InMemoryTerm) MovesSinceLastCheck() string {
 }
 
 // 以下实现 TermLike 接口
-func (t *InMemoryTerm) Width() uint16  { return t.state.width }
-func (t *InMemoryTerm) Height() uint16 { return t.state.height }
+func (t *InMemoryTerm) Width() uint16 {
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	return t.state.width
+}
+
+func (t *InMemoryTerm) Height() uint16 {
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	return t.state.height
+}
 
 func (t *InMemoryTerm) MoveCursorUp(n int) error {
 	if n == 0 {
 		return nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveUp(n))
 	if n > t.state.cursorRow {
 		t.state.cursorRow = 0
@@ -139,8 +148,8 @@ func (t *InMemoryTerm) MoveCursorDown(n int) error {
 	if n == 0 {
 		return nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveDown(n))
 	t.state.cursorRow += n
 	if t.state.cursorRow >= int(t.state.height) {
@@ -153,8 +162,8 @@ func (t *InMemoryTerm) MoveCursorRight(n int) error {
 	if n == 0 {
 		return nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveRight(n))
 	t.state.cursorCol += n
 	if t.state.cursorCol > int(t.state.width) {
@@ -167,8 +176,8 @@ func (t *InMemoryTerm) MoveCursorLeft(n int) error {
 	if n == 0 {
 		return nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveLeft(n))
 	if n > t.state.cursorCol {
 		t.state.cursorCol = 0
@@ -179,31 +188,38 @@ func (t *InMemoryTerm) MoveCursorLeft(n int) error {
 }
 
 func (t *InMemoryTerm) WriteLine(s string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// record history under lock, then feed bytes to parser without holding the lock
+	t.state.mu.Lock()
 	t.state.history = append(t.state.history, moveStr(s))
-	t.state.writeStr(s)
 	t.state.history = append(t.state.history, moveNewLine())
-	// 新行：列归零，行增加
+	t.state.mu.Unlock()
+
+	t.state.writeStr(s)
+
+	// update cursor position for the newline
+	t.state.mu.Lock()
 	t.state.cursorCol = 0
 	t.state.cursorRow++
 	if t.state.cursorRow >= int(t.state.height) {
 		t.state.cursorRow = int(t.state.height) - 1
 	}
+	t.state.mu.Unlock()
 	return nil
 }
 
 func (t *InMemoryTerm) WriteStr(s string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// record history under lock, parser will update buffer while locking as needed
+	t.state.mu.Lock()
 	t.state.history = append(t.state.history, moveStr(s))
+	t.state.mu.Unlock()
+
 	t.state.writeStr(s)
 	return nil
 }
 
 func (t *InMemoryTerm) ClearLine() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveClear())
 	r := t.state.cursorRow
 	for c := 0; c < int(t.state.width); c++ {
@@ -214,17 +230,19 @@ func (t *InMemoryTerm) ClearLine() error {
 }
 
 func (t *InMemoryTerm) Flush() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveFlush())
 	return nil
 }
 
 // 内部状态与辅助类型
 type inMemoryTermState struct {
+	mu        sync.Mutex
 	width     uint16
 	height    uint16
 	buf       [][]rune
+	parser    *vte.Parser
 	cursorRow int
 	cursorCol int
 	history   []move
@@ -239,33 +257,167 @@ func newInMemoryTermState(rows, cols uint16) *inMemoryTermState {
 		}
 		buf[i] = row
 	}
-	return &inMemoryTermState{width: cols, height: rows, buf: buf, cursorRow: 0, cursorCol: 0, history: nil}
+	s := &inMemoryTermState{width: cols, height: rows, buf: buf, cursorRow: 0, cursorCol: 0, history: nil}
+	// create performer and parser
+	perf := &vtePerformer{state: s}
+	p := vte.NewParser(perf)
+	s.parser = p
+	return s
 }
 
 // writeStr 将字符串写入缓冲区，处理换行与自动换行（固定列宽）。
 func (s *inMemoryTermState) writeStr(str string) {
-	for _, r := range str {
-		if r == '\n' || r == '\r' {
-			// 视为新的逻辑行起始
-			s.cursorCol = 0
-			s.cursorRow++
-			if s.cursorRow >= int(s.height) {
-				s.cursorRow = int(s.height) - 1
-			}
-			continue
-		}
-		// 如果列已到达宽度，先换行
-		if s.cursorCol >= int(s.width) {
-			s.cursorRow++
-			s.cursorCol = 0
-			if s.cursorRow >= int(s.height) {
-				s.cursorRow = int(s.height) - 1
-			}
-		}
-		s.buf[s.cursorRow][s.cursorCol] = r
-		s.cursorCol++
+	// Feed bytes into the vte parser; the performer will update the buffer
+	b := []byte(str)
+	for _, by := range b {
+		s.parser.Advance(by)
 	}
 }
+
+// writeRuneLocked writes a single rune to the buffer. Caller must hold s.mu.
+func (s *inMemoryTermState) writeRuneLocked(r rune) {
+	if r == '\n' || r == '\r' {
+		s.cursorCol = 0
+		s.cursorRow++
+		if s.cursorRow >= int(s.height) {
+			s.cursorRow = int(s.height) - 1
+		}
+		return
+	}
+	if s.cursorCol >= int(s.width) {
+		s.cursorRow++
+		s.cursorCol = 0
+		if s.cursorRow >= int(s.height) {
+			s.cursorRow = int(s.height) - 1
+		}
+	}
+	s.buf[s.cursorRow][s.cursorCol] = r
+	s.cursorCol++
+}
+
+// vte performer implementation
+type vtePerformer struct {
+	state *inMemoryTermState
+}
+
+func (p *vtePerformer) Print(r rune) {
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	p.state.writeRuneLocked(r)
+}
+
+func (p *vtePerformer) Execute(b byte) {
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	switch b {
+	case '\r':
+		p.state.cursorCol = 0
+	case '\n':
+		p.state.cursorCol = 0
+		p.state.cursorRow++
+		if p.state.cursorRow >= int(p.state.height) {
+			p.state.cursorRow = int(p.state.height) - 1
+		}
+	default:
+		// ignore other control codes for now
+	}
+}
+
+func (p *vtePerformer) Put(b byte) {
+	// treat as a single-byte printable
+	r, _ := utf8.DecodeRune([]byte{b})
+	p.Print(r)
+}
+
+func (p *vtePerformer) Unhook()                                                           {}
+func (p *vtePerformer) Hook(params [][]uint16, intermediates []byte, ignore bool, r rune) {}
+func (p *vtePerformer) OscDispatch(params [][]byte, bellTerminated bool)                  {}
+
+func (p *vtePerformer) CsiDispatch(params [][]uint16, intermediates []byte, ignore bool, r rune) {
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	get := func(def int) int {
+		if len(params) == 0 || len(params[0]) == 0 {
+			return def
+		}
+		return int(params[0][0])
+	}
+	switch r {
+	case 'A': // CUU
+		n := get(1)
+		p.state.history = append(p.state.history, moveUp(n))
+		if n > p.state.cursorRow {
+			p.state.cursorRow = 0
+		} else {
+			p.state.cursorRow -= n
+		}
+	case 'B': // CUD
+		n := get(1)
+		p.state.history = append(p.state.history, moveDown(n))
+		p.state.cursorRow += n
+		if p.state.cursorRow >= int(p.state.height) {
+			p.state.cursorRow = int(p.state.height) - 1
+		}
+	case 'C': // CUF
+		n := get(1)
+		p.state.history = append(p.state.history, moveRight(n))
+		p.state.cursorCol += n
+		if p.state.cursorCol > int(p.state.width) {
+			p.state.cursorCol = int(p.state.width)
+		}
+	case 'D': // CUB
+		n := get(1)
+		p.state.history = append(p.state.history, moveLeft(n))
+		if n > p.state.cursorCol {
+			p.state.cursorCol = 0
+		} else {
+			p.state.cursorCol -= n
+		}
+	case 'H', 'f': // CUP
+		row := 1
+		col := 1
+		if len(params) > 0 && len(params[0]) > 0 {
+			row = int(params[0][0])
+		}
+		if len(params) > 1 && len(params[1]) > 0 {
+			col = int(params[1][0])
+		}
+		// clamp and convert to 0-based
+		if row <= 0 {
+			row = 1
+		}
+		if col <= 0 {
+			col = 1
+		}
+		r := row - 1
+		c := col - 1
+		if r >= int(p.state.height) {
+			r = int(p.state.height) - 1
+		}
+		if c >= int(p.state.width) {
+			c = int(p.state.width) - 1
+		}
+		p.state.cursorRow = r
+		p.state.cursorCol = c
+	case 'K': // EL
+		// erase in line; common case is parameter 2 (whole line)
+		// We'll clear entire line for simplicity
+		rr := p.state.cursorRow
+		for i := 0; i < int(p.state.width); i++ {
+			p.state.buf[rr][i] = ' '
+		}
+		p.state.history = append(p.state.history, moveClear())
+	default:
+		// ignore other CSI for now
+		_ = r
+	}
+}
+
+func (p *vtePerformer) EscDispatch(intermediates []byte, ignore bool, b byte) {}
+
+func (p *vtePerformer) SosPmApcDispatch(kind vte.SosPmApcKind, data []byte, bellTerminated bool) {}
+
+// write cell-aware rune
 
 // 历史移动类型的简化实现
 type move struct {

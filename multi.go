@@ -1,6 +1,7 @@
 package mpb
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -214,6 +215,19 @@ func (m *multiDrawTarget) Disconnect(now time.Time)         { m.inner.Disconnect
 // Return a single aggregated drawable so MultiState can prepare its
 // combined frame into the returned state's buffer and call Draw() once.
 func (m *multiDrawTarget) Drawable(force bool) Drawable {
+	// Check rate limit by calling DrawableWithNow on the inner target
+	if pt, ok := m.inner.(*progressDrawTarget); ok {
+		if drawable := pt.DrawableWithNow(force, time.Now()); drawable != nil {
+			// Rate limiter allowed drawing, create aggregated drawable
+			if m.agg == nil {
+				m.agg = &aggregatedDrawable{state: &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}, mdt: m}
+			}
+			return m.agg
+		}
+		// Rate limited, return nil to skip this draw
+		return nil
+	}
+	// Fallback for other draw target types
 	if m.agg == nil {
 		m.agg = &aggregatedDrawable{state: &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}, mdt: m}
 	}
@@ -255,11 +269,14 @@ func (a *aggregatedDrawable) State() *DrawStateWrapper { return DrawStateWrapper
 func (a *aggregatedDrawable) Draw() error {
 	ds := a.state
 	contents := ds.contents
+	// Debug: log when Draw is called
+	// fmt.Fprintf(os.Stderr, "aggregatedDrawable.Draw() called with %d lines\n", len(ds.lines))
 	// (alignment handling will be applied in the fast-path using concrete progressDrawTarget)
 
 	// Prefer to use concrete progressDrawTarget fast path when available
 	if pt, ok := a.mdt.inner.(*progressDrawTarget); ok {
 		pt.kind.mu.Lock()
+		// Delegate entire frame drawing to DrawStateStub.drawToTerm to match Rust behavior.
 		// Delegate entire frame drawing to DrawStateStub.drawToTerm to match Rust behavior.
 		// Handle both Term and TermLike variants so InMemoryTerm (term-like)
 		// is used when provided instead of defaulting to stderr.
@@ -270,8 +287,9 @@ func (a *aggregatedDrawable) Draw() error {
 			} else {
 				term = NewStdTermWithWriter(os.Stderr)
 			}
-			_ = ds.drawToTerm(term, &pt.kind.termLastLineCount)
-			pt.kind.frameLines = pt.kind.termLastLineCount.AsInt()
+			newCount, _ := ds.drawToTerm(term, pt.kind.termLastLineCount)
+			pt.kind.termLastLineCount = newCount
+			pt.kind.frameLines = newCount.AsInt()
 			pt.kind.mu.Unlock()
 			return nil
 		}
@@ -283,8 +301,11 @@ func (a *aggregatedDrawable) Draw() error {
 			} else {
 				term = NewStdTermWithWriter(os.Stderr)
 			}
-			_ = ds.drawToTerm(term, &pt.kind.tlLastLineCount)
-			pt.kind.frameLines = pt.kind.tlLastLineCount.AsInt()
+			// Debug: log term type
+			fmt.Fprintf(os.Stderr, "Drawing to TermLike: %T, with %d lines\n", term, len(ds.lines))
+			newCount, _ := ds.drawToTerm(term, pt.kind.tlLastLineCount)
+			pt.kind.tlLastLineCount = newCount
+			pt.kind.frameLines = newCount.AsInt()
 			pt.kind.mu.Unlock()
 			return nil
 		}
@@ -310,9 +331,11 @@ func (a *aggregatedDrawable) Draw() error {
 }
 
 func (a *aggregatedDrawable) Clear() error {
+	// Clear the state by setting it to empty, then draw it to clear the terminal
 	a.state.lines = a.state.lines[:0]
 	a.state.contents = a.state.contents[:0]
-	return nil
+	// Call Draw() to actually clear the terminal with empty state
+	return a.Draw()
 }
 
 func (a *aggregatedDrawable) Width() *uint16 { return a.mdt.inner.Width() }
@@ -376,7 +399,9 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 		reapIndices = append(reapIndices, index)
 	}
 
-	// If this draw is due to a println/originLines, then clear all zombie lines
+	// If this draw is due to a println, erase all the zombie lines before
+	// drawing so the draw logic uses the adjusted last-line count (parity
+	// with Rust which clears zombie lines prior to assembling the frame).
 	if originLines != nil {
 		if adjTarget, ok := ms.draw_target.(interface{ AdjustLastLineCount(LineAdjust) }); ok {
 			adjTarget.AdjustLastLineCount(LineAdjust{Kind: LineAdjustClear, Count: ms.zombieLinesCount})
@@ -491,6 +516,8 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 	} else {
 		_ = drawable.Draw()
 	}
+
+	// (zombie lines already cleared pre-draw for println paths)
 
 	// remove reaped indices from state
 	for _, idx := range reapIndices {

@@ -39,6 +39,7 @@ func main() {
 				_, _ = outFile.WriteString(memTerm.Contents())
 				_ = outFile.Close()
 			}
+
 		}()
 	} else {
 		m = mpb.NewMultiProgress()
@@ -107,7 +108,9 @@ func main() {
 	innerWg.Wait()
 	wg.Wait()
 	pb2.FinishWithMessage("all jobs done")
-	if err := m.Clear(); err != nil {
-		panic(err)
+	if !*capture {
+		if err := m.Clear(); err != nil {
+			panic(err)
+		}
 	}
 }

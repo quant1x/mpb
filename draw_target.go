@@ -126,23 +126,55 @@ func (p *progressDrawTarget) AdjustLastLineCount(adjust LineAdjust) {
 	p.kind.mu.Lock()
 	defer p.kind.mu.Unlock()
 	switch adjust.Kind {
+	// Align with Rust semantics: Keep => add (retain zombie lines), Clear => sub (remove tracked lines)
 	case LineAdjustClear:
-		if p.kind.variant == variantTerm {
-			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingAdd(adjust.Count)
-		} else if p.kind.variant == variantTermLike {
-			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingAdd(adjust.Count)
-		}
-	case LineAdjustKeep:
 		if p.kind.variant == variantTerm {
 			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingSub(adjust.Count)
 		} else if p.kind.variant == variantTermLike {
 			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingSub(adjust.Count)
 		}
+	case LineAdjustKeep:
+		if p.kind.variant == variantTerm {
+			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingAdd(adjust.Count)
+		} else if p.kind.variant == variantTermLike {
+			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingAdd(adjust.Count)
+		}
 	}
 }
 
 // Drawable 返回一个实现 state.go 中 Drawable 接口的对象。
+// 如果速率限制不允许绘制，返回 nil。
 func (p *progressDrawTarget) Drawable(force bool) Drawable {
+	return p.DrawableWithNow(force, time.Now())
+}
+
+// DrawableWithNow 允许指定时间以进行速率限制检查。
+// 如果速率限制不允许绘制，返回 nil。
+func (p *progressDrawTarget) DrawableWithNow(force bool, now time.Time) Drawable {
+	p.kind.mu.Lock()
+	defer p.kind.mu.Unlock()
+
+	// 检查速率限制（如果 force 为 true 则跳过）
+	allowDraw := force
+	if !allowDraw {
+		switch p.kind.variant {
+		case variantTerm:
+			if p.kind.termRateLimiter != nil {
+				allowDraw = p.kind.termRateLimiter.allow(now)
+			}
+		case variantTermLike:
+			if p.kind.tlRateLimiter != nil {
+				allowDraw = p.kind.tlRateLimiter.allow(now)
+			}
+		default:
+			// 没有速率限制
+		}
+	}
+
+	if !allowDraw {
+		return nil // 速率限制，跳过本次绘制
+	}
+
 	// Return a drawable that matches the configured variant semantics.
 	switch p.kind.variant {
 	case variantTerm:
@@ -168,15 +200,25 @@ type termDrawable struct {
 
 func (t *termDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
 func (t *termDrawable) Draw() error {
-	// delegate to DrawStateStub.drawToTerm
-	return t.state.drawToTerm(t.term, t.lastCount)
+	// delegate to DrawStateStub.drawToTerm; update lastCount with returned value
+	newCount, err := t.state.drawToTerm(t.term, *t.lastCount)
+	if err != nil {
+		return err
+	}
+	*t.lastCount = newCount
+	return nil
 }
 func (t *termDrawable) Clear() error {
 	// Reset draw state and delegate to centralized draw logic so that
 	// clearing actually emits terminal clear sequences (parity with Rust).
 	t.state.lines = t.state.lines[:0]
 	t.state.contents = t.state.contents[:0]
-	return t.state.drawToTerm(t.term, t.lastCount)
+	newCount, err := t.state.drawToTerm(t.term, *t.lastCount)
+	if err != nil {
+		return err
+	}
+	*t.lastCount = newCount
+	return nil
 }
 func (t *termDrawable) Width() *uint16 { return t.width }
 
@@ -190,12 +232,22 @@ type termLikeDrawable struct {
 
 func (t *termLikeDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
 func (t *termLikeDrawable) Draw() error {
-	return t.state.drawToTerm(t.termLike, t.lastCount)
+	newCount, err := t.state.drawToTerm(t.termLike, *t.lastCount)
+	if err != nil {
+		return err
+	}
+	*t.lastCount = newCount
+	return nil
 }
 func (t *termLikeDrawable) Clear() error {
 	t.state.lines = t.state.lines[:0]
 	t.state.contents = t.state.contents[:0]
-	return t.state.drawToTerm(t.termLike, t.lastCount)
+	newCount, err := t.state.drawToTerm(t.termLike, *t.lastCount)
+	if err != nil {
+		return err
+	}
+	*t.lastCount = newCount
+	return nil
 }
 func (t *termLikeDrawable) Width() *uint16 { return t.width }
 
@@ -267,15 +319,18 @@ func (d *simpleDrawable) Draw() error {
 			// call centralized draw logic which will update per-variant last-line count
 			switch d.owner.kind.variant {
 			case variantTerm:
-				_ = d.state.drawToTerm(term, &d.owner.kind.termLastLineCount)
-				d.owner.kind.frameLines = d.owner.kind.termLastLineCount.AsInt()
+				newCount, _ := d.state.drawToTerm(term, d.owner.kind.termLastLineCount)
+				d.owner.kind.termLastLineCount = newCount
+				d.owner.kind.frameLines = newCount.AsInt()
 			case variantTermLike:
-				_ = d.state.drawToTerm(term, &d.owner.kind.tlLastLineCount)
-				d.owner.kind.frameLines = d.owner.kind.tlLastLineCount.AsInt()
+				newCount, _ := d.state.drawToTerm(term, d.owner.kind.tlLastLineCount)
+				d.owner.kind.tlLastLineCount = newCount
+				d.owner.kind.frameLines = newCount.AsInt()
 			default:
 				// fallback to termLastLineCount
-				_ = d.state.drawToTerm(term, &d.owner.kind.termLastLineCount)
-				d.owner.kind.frameLines = d.owner.kind.termLastLineCount.AsInt()
+				newCount, _ := d.state.drawToTerm(term, d.owner.kind.termLastLineCount)
+				d.owner.kind.termLastLineCount = newCount
+				d.owner.kind.frameLines = newCount.AsInt()
 			}
 			d.owner.kind.mu.Unlock()
 			return nil
