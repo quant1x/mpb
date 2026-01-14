@@ -191,19 +191,11 @@ func (t *InMemoryTerm) WriteLine(s string) error {
 	// record history under lock, then feed bytes to parser without holding the lock
 	t.state.mu.Lock()
 	t.state.history = append(t.state.history, moveStr(s))
-	t.state.history = append(t.state.history, moveNewLine())
+	t.state.history = append(t.state.history, moveStr("\r\n"))
 	t.state.mu.Unlock()
 
 	t.state.writeStr(s)
-
-	// update cursor position for the newline
-	t.state.mu.Lock()
-	t.state.cursorCol = 0
-	t.state.cursorRow++
-	if t.state.cursorRow >= int(t.state.height) {
-		t.state.cursorRow = int(t.state.height) - 1
-	}
-	t.state.mu.Unlock()
+	t.state.writeStr("\r\n")
 	return nil
 }
 

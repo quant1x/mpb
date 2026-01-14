@@ -1,7 +1,6 @@
 package mpb
 
 import (
-	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -301,8 +300,6 @@ func (a *aggregatedDrawable) Draw() error {
 			} else {
 				term = NewStdTermWithWriter(os.Stderr)
 			}
-			// Debug: log term type
-			fmt.Fprintf(os.Stderr, "Drawing to TermLike: %T, with %d lines\n", term, len(ds.lines))
 			newCount, _ := ds.drawToTerm(term, pt.kind.tlLastLineCount)
 			pt.kind.tlLastLineCount = newCount
 			pt.kind.frameLines = newCount.AsInt()
