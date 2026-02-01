@@ -1,7 +1,9 @@
 package mpb
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +164,11 @@ func (b *BarState) Tick(now time.Time) {
 
 // Index 返回进度条在 MultiProgress 中的索引（如果存在）。
 func (b *BarState) Index() (int, bool) {
-	// If the draw target is a multiDrawTarget, search its ordering for this BarState
+	// If the draw target is a remoteDrawTarget, use its Remote() method to get the index
+	if _, idx, ok := b.drawTarget.Remote(); ok {
+		return idx, true
+	}
+	// Fallback: If the draw target is a multiDrawTarget, search its ordering for this BarState
 	if md, ok := b.drawTarget.(*multiDrawTarget); ok && md != nil {
 		md.ms.mu.RLock()
 		defer md.ms.mu.RUnlock()
@@ -621,6 +627,8 @@ func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (Visual
 	// slightly less efficient but avoids complex cursor-positioning bugs
 	// that can cause bars to be written to the wrong lines.
 	n := prevBarCount.AsInt()
+	// Debug: log prevBarCount and number of lines
+	fmt.Fprintf(os.Stderr, "drawToTerm: prevBarCount=%d, len(lines)=%d, len(contents)=%d\n", n, len(ds.lines), len(ds.contents))
 	up := prevBarCount.SaturatingSub(VisualLinesFromInt(1)).AsInt()
 	if up > 0 {
 		if err := term.MoveCursorUp(up); err != nil {
@@ -647,6 +655,7 @@ func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (Visual
 
 	// full height needed (including orphan/text and bar lines)
 	fullHeight := visualLineCount(ds.lines, ds.contents, termWidth)
+	fmt.Fprintf(os.Stderr, "drawToTerm: fullHeight=%d\n", fullHeight)
 
 	// shift for bottom alignment: write blank cleared lines
 	var shift VisualLines = 0
@@ -1106,16 +1115,20 @@ func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.inner == nil {
+		fmt.Fprintf(os.Stderr, "FormatForWidth: s.inner == nil\n")
 		return nil, nil
 	}
 	// Only skip formatting if the status is DoneHidden (like Rust)
 	// DoneVisible should still be displayed
 	if s.inner.state.status == statusDoneHidden {
+		fmt.Fprintf(os.Stderr, "FormatForWidth: statusDoneHidden\n")
 		return nil, nil
 	}
 	isErr := false
 	if s.inner != nil && s.inner.drawTarget != nil {
 		isErr = s.inner.drawTarget.IsStderr()
 	}
-	return s.inner.style.FormatState(&s.inner.state, width, isErr)
+	lines, contents := s.inner.style.FormatState(&s.inner.state, width, isErr)
+	fmt.Fprintf(os.Stderr, "FormatForWidth: returning len(lines)=%d, len(contents)=%d\n", len(lines), len(contents))
+	return lines, contents
 }

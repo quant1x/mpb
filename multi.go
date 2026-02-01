@@ -1,6 +1,7 @@
 package mpb
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -77,7 +78,9 @@ func (mp *MultiProgress) InsertBefore(before *ProgressBar, pb *ProgressBar) *Pro
 }
 
 func (mp *MultiProgress) InsertAfter(after *ProgressBar, pb *ProgressBar) *ProgressBar {
-	if idx, ok := after.Index(); ok {
+	idx, ok := after.Index()
+	fmt.Fprintf(os.Stderr, "InsertAfter: after.Index() = (%d, %v)\n", idx, ok)
+	if ok {
 		return mp.internalize(InsertLocationAfter, idx, pb)
 	}
 	return mp.Add(pb)
@@ -97,6 +100,7 @@ func (mp *MultiProgress) internalize(loc InsertLocation, pos int, pb *ProgressBa
 	if idx >= 0 && idx < len(mp.state.members) {
 		mp.state.members[idx].sb = pb.state
 	}
+	fmt.Fprintf(os.Stderr, "internalize: idx=%d, loc=%d, pos=%d, ordering=%v\n", idx, loc, pos, mp.state.ordering)
 	// ensure the bar draws into per-bar remote draw target so multi can identify it
 	pb.SetDrawTarget(NewRemoteDrawTarget(mp.state, idx))
 	mp.state.mu.Unlock()
@@ -455,6 +459,12 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 		if m.isZombie || m.sb == nil {
 			continue
 		}
+		// Debug: log which member is being rendered
+		if m.sb != nil && m.sb.inner != nil {
+			fmt.Fprintf(os.Stderr, "draw: rendering member idx=%d, status=%v, wptr=%v\n", idx, m.sb.inner.state.status, wptr != nil)
+		} else {
+			fmt.Fprintf(os.Stderr, "draw: rendering member idx=%d, wptr=%v\n", idx, wptr != nil)
+		}
 		// if this is the origin bar, use originLines/originContents provided by caller
 		if origin != nil && m.sb.inner == origin {
 			for _, lt := range originLines {
@@ -468,6 +478,7 @@ func (ms *MultiState) draw(force bool, originLines []LineType, originContents []
 		// get formatted representation from SafeBarState (thread-safe)
 		if wptr != nil {
 			lines, contents := m.sb.FormatForWidth(width)
+			fmt.Fprintf(os.Stderr, "draw: member idx=%d, FormatForWidth returned len(lines)=%d\n", idx, len(lines))
 			for _, lt := range lines {
 				ds.lines = append(ds.lines, lt)
 			}

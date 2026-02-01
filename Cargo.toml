@@ -12,6 +12,10 @@ documentation = "https://docs.rs/indicatif"
 readme = "README.md"
 exclude = ["screenshots/*"]
 
+[lib]
+name = "indicatif"
+path = "lib.rs"
+
 [dependencies]
 console = { version = "0.16", default-features = false, features = ["ansi-parsing", "std"] }
 futures-core = { version = "0.3", default-features = false, optional = true }
