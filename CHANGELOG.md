@@ -3,6 +3,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-11
+### Changed
+- perf[go]：StdTerm 改为带缓冲，一帧只写一次终端
+  用户反馈：进度条"视觉上很闪"，Rust 版丝滑。查下来刷新频率与上游完全一致
+  （draw target 的 RateLimiter 是 20Hz：interval = 1000/20 = 50ms、MAX_BURST = 20；
+  pos.allow(now) 的 INTERVAL = 1ms / MAX_BURST = 10 也与上游常量逐字相同；单条与
+  MultiProgress 两条路径都过限流器。实测 300 万次 Inc(1) 只出 20 帧、单步 12ns），
+  闪的根源在**写终端的方式**：
+
+  - 上游 stdout() / stderr() 是 Term::buffered_stdout() / buffered_stderr()，
+    console::Term 的 inner.buffer 为 Some(..)，write_str 只进缓冲，indicatif 在
+    draw_to_term 末尾调一次 term.flush()（draw_target.rs:583）才落盘 —— 一帧 = 一次
+    write(2)，终端每帧只重绘一次；
+  - 本端口 StdTerm.WriteStr 是直写，drawToTerm 一帧里的光标上移、clear_line×N、
+    下移×N、逐行内容、逐行补白共几十次 write 全是独立系统调用，终端在"清屏"与
+    "重画"之间反复重绘，肉眼就是闪烁（5 条 bar 约 20 次/帧）。
+
+  改动：
+
+  - term_like.go：StdTerm 补上 inner.buffer 的等价物（buffered + mu + buf），
+    WriteStr / writeEscape 进缓冲，Flush() 一次性 write 并清空（持锁写，与上游一致）；
+    NewStdTerm / NewStderrTerm 改为带缓冲（对应 buffered_stdout / buffered_stderr），
+    NewStdTermWithWriter 保持不缓冲并在注释里写明差别；draw_target.go 那条写 stderr
+    的兜底路径改用带缓冲构造。drawToTerm 末尾本就调 Flush()，无需改动。
+  - progress_bar.go：tick 改为接收 now（对应上游 tick_inner(now) 复用同一个 Instant），
+    去掉每步多读一次时钟。
+
+  测试（期望值取上游语义，不取本地跑出来的数）：
+
+  - TestStdTermWritesOneBufferPerFrame：5 帧 → 5 次 write；同一帧不带缓冲则 >1 次，
+    用来证明这条不是白测。
+  - TestRateLimiterThrottlesToRefreshHz：1 秒内 1000 次调用只放行约 39 次
+    （突发 20 + 每秒 20），把 20Hz 的口径钉住。
+- release version 0.1.3
+
 ## [0.1.2] - 2026-10-11
 ### Changed
 - fix[go]：Drawable::state() 每帧先 reset，修进度条逐帧往下换行
@@ -185,7 +220,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.2...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.3...HEAD
+[0.1.3]: https://gitee.com/quant1x/mpb/compare/v0.1.2...v0.1.3
 [0.1.2]: https://gitee.com/quant1x/mpb/compare/v0.1.1...v0.1.2
 [0.1.1]: https://gitee.com/quant1x/mpb/compare/v0.1.0...v0.1.1
 [0.1.0]: https://gitee.com/quant1x/mpb/compare/v0.0.1...v0.1.0
