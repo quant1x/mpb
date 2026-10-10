@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
@@ -227,7 +230,18 @@ func (p *ProgressBar) ResetElapsed() { p.state.Reset(time.Now(), ResetElapsed) }
 func (p *ProgressBar) Reset() { p.state.Reset(time.Now(), ResetAll) }
 
 // Index 返回在 MultiProgress 中的索引（如果存在）
-func (p *ProgressBar) Index() (int, bool) { return p.state.Index() }
+//
+// 对应 Rust 的 `ProgressBar::index()`：返回的是 `MultiState::members` 的**不透明下标**
+// （槽位会被 free_set 复用，所以它与屏幕上的先后无关）。要看屏幕位置用 VisualIndex。
+func (p *ProgressBar) Index() (uint, bool) { return p.state.Index() }
+
+// VisualIndex 返回在 MultiProgress 中的**屏幕位置**（第几行），不在任何
+// MultiProgress 里时返回 false。
+//
+// 对应 Rust 0.18.6 新增的 `ProgressBar::visual_index()`：
+//
+//	self.state().draw_target.remote().map(|(remote, idx)| remote.read().unwrap().visual_index(idx))
+func (p *ProgressBar) VisualIndex() (uint, bool) { return p.state.VisualIndex() }
 
 // 弱引用类型
 type WeakProgressBar struct{ id uint64 }

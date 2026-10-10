@@ -1,7 +1,11 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
 	"os"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -121,7 +125,7 @@ const (
 //
 //	TargetKind::Hidden          => true
 //	TargetKind::Term { term, }  => !term.is_term()
-//	TargetKind::Multi { state } => state.read().unwrap().is_hidden()
+//	TargetKind::Multi { state } => state.read().unwrap().draw_target.is_hidden()
 //	_                           => false
 func (p *progressDrawTarget) IsHidden() bool {
 	switch p.kind.variant {
@@ -157,7 +161,7 @@ func (p *progressDrawTarget) Width() *uint16 {
 	return p.kind.width
 }
 
-func (p *progressDrawTarget) Remote() (*RemoteStub, int, bool) { return nil, 0, false }
+func (p *progressDrawTarget) Remote() (*RemoteStub, uint, bool) { return nil, 0, false }
 
 func (p *progressDrawTarget) Disconnect(now time.Time) {}
 
@@ -397,6 +401,24 @@ func (d *simpleDrawable) Width() *uint16 { return d.width }
 
 // newTermDrawTarget 对应 `term(term, refresh_rate)`：Term 变体，带速率限制。
 // stderr 标记对应 Rust 里 `term.target() == TermTarget::Stderr` 的判定（is_stderr()）。
+// isDumb 对应 Rust 的 console::is_dumb()：
+//
+//	Ok(term) => term == "dumb",
+//	Err(_)   => windows: false / 其它平台: true
+//
+// 即：TERM 显式为 "dumb" 时是哑终端；未设置时 Windows 不算哑（原生终端通常不设 TERM），
+// 其它平台算哑。
+func isDumb() bool {
+	defaultDumb := true
+	if runtime.GOOS == "windows" {
+		defaultDumb = false
+	}
+	if term, ok := os.LookupEnv("TERM"); ok {
+		return term == "dumb"
+	}
+	return defaultDumb
+}
+
 func newTermDrawTarget(term TermLike, refreshRate uint8, stderr bool) ProgressDrawTarget {
 	var w uint16
 	if term != nil {
@@ -409,6 +431,14 @@ func newTermDrawTarget(term TermLike, refreshRate uint8, stderr bool) ProgressDr
 		if it, ok := term.(interface{ IsTerm() bool }); ok {
 			isTerm = it.IsTerm()
 		}
+	}
+	// Rust 0.18.6 把判定提前到 `ProgressDrawTarget::term()` 构造期：
+	//
+	//	if !term.is_term() || is_dumb() { return Self::hidden(); }
+	//
+	// 之前这个判定在 `drawable()` 里（每次取 drawable 时才返回 None）。
+	if !isTerm || isDumb() {
+		return NewHiddenDrawTarget()
 	}
 	return &progressDrawTarget{kind: targetKind{
 		variant:         variantTerm,

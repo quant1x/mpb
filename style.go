@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
@@ -179,7 +182,7 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int, forS
 		}
 		key := part.Key
 
-		// Rust 的收尾（style.rs:381-400）：**所有** key 都走同一条，不分彼此：
+		// Rust 的收尾（style.rs:365-384）：**所有** key 都走同一条，不分彼此：
 		//
 		//	match width {
 		//	    Some(width) => {
@@ -189,15 +192,25 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int, forS
 		//	    None => match style { Some(s) => s.apply_to(&buf), None => buf },
 		//	}
 		//
+		// 但 `style` 在这一步之前被按 key 过滤过（style.rs:359-363）：
+		//
+		//	// `format_bar` styles the bar's segments itself.
+		//	let style = match key.as_str() { "bar" | "wide_bar" => None, _ => style.as_ref() };
+		//
+		// 即 bar/wide_bar 的颜色由 format_bar 自己上，这里再套一层会重复。
+		//
 		// Go 之前只给 msg/prefix/pos/len/percent 补白，其余 key 的宽度说明符被静默忽略
 		// （`{bytes:>10}` 不补白、`{elapsed:>8}` 不补白……）。现在统一。
+		style := part.Style
+		if key == "bar" || key == "wide_bar" {
+			style = nil
+		}
 		emit := func(buf string) string {
 			if part.Width > 0 {
 				buf = padAndTruncate(buf, part.Width, part.Align, part.Truncate)
 			}
-			// Rust：非 bar 的 key 只认 `style`（alt_style 只有 format_bar 用得到）
-			if part.Style != nil {
-				buf = part.Style.ApplyFor(buf, forStderr)
+			if style != nil {
+				buf = style.ApplyFor(buf, forStderr)
 			}
 			return buf
 		}
@@ -229,7 +242,7 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int, forS
 			if w == 0 {
 				w = 20
 			}
-			buf = ps.formatBar(state.Fraction(), w, part.AltStyle, forStderr)
+			buf = ps.formatBar(state.Fraction(), w, part.Style, part.AltStyle, forStderr)
 		case "spinner":
 			buf = ps.currentTickStr(state)
 		case "msg":
@@ -332,8 +345,8 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int, forS
 			}
 			pushLine(strings.ReplaceAll(line, "\x00", rendered))
 		} else {
-			// Rust 只有 format_bar 用得到 alt_style（bar / wide_bar）
-			bar := ps.formatBar(state.Fraction(), left, wide.AltStyle, forStderr)
+			// Rust：只有 format_bar 用得到 style/alt_style（bar / wide_bar）
+			bar := ps.formatBar(state.Fraction(), left, wide.Style, wide.AltStyle, forStderr)
 			pushLine(strings.ReplaceAll(line, "\x00", bar))
 		}
 	}
@@ -348,11 +361,47 @@ func (ps *ProgressStyle) FormatState(state *ProgressState, targetWidth int, forS
 
 // padAndTruncate returns a string that when measured occupies exactly width columns
 // according to measureTextWidth. If truncate is true, content is truncated to fit.
+// Width 对应 Rust 的 `pub struct Width`：宽度的计算入口，带一个全局的
+// 「歧义宽度（CJK）」开关。
+//
+// Rust 里宽度计算分散在 `measure_text_width` / `UnicodeWidthChar::width` 两处，
+// 0.18.6 把它们收进了这个结构，并允许切换 CJK 口径：
+//
+//	WIDTH.char('█')     // 默认 1，set_default_cjk(true) 后 2
+//	WIDTH.str(s)        // 纯文本宽度
+//	WIDTH.ansi_str(s)   // 跳过 ANSI 段后的可见宽度
+type Width struct{}
+
+// DefaultWidth 对应 Rust 的 `pub(crate) static WIDTH: Width = Width::new()`。
+var DefaultWidth = Width{}
+
+// SetDefaultCJK 对应 Rust 的 `Width::set_default_cjk(is_cjk)`。
+//
+// 打开后，"歧义宽度"字符（如 █、○、± 等 East Asian Ambiguous）按 2 列计算，
+// 适合 CJK 环境。底层落到 go-runewidth 的 EastAsianWidth 条件上（Rust 侧是
+// `UnicodeWidthChar::width_cjk` / `UnicodeWidthStr::width_cjk`）。
+func (Width) SetDefaultCJK(isCJK bool) { runewidth.DefaultCondition.EastAsianWidth = isCJK }
+
+// char 对应 `Width::char`：单个字符的列宽。控制字符为 0
+// （Rust 是 `c.width().unwrap_or(0)` —— 控制字符 width() 返回 None）。
+func (Width) char(r rune) int {
+	if w := runewidth.RuneWidth(r); w > 0 {
+		return w
+	}
+	return 0
+}
+
+// str 对应 `Width::str`：不含 ANSI 的纯文本宽度（Rust 是 `UnicodeWidthStr::width`）。
+func (Width) str(s string) int { return runewidth.StringWidth(s) }
+
+// ansiStr 对应 `Width::ansi_str`：跳过 ANSI 段，其余各段按 str 累加。
+func (Width) ansiStr(s string) int { return measureTextWidth(s) }
+
 func padAndTruncate(s string, width int, align rune, truncate bool) string {
 	if width <= 0 {
 		return ""
 	}
-	cols := measureTextWidth(s)
+	cols := DefaultWidth.ansiStr(s)
 	if cols == width {
 		return s
 	}
@@ -377,7 +426,7 @@ func padAndTruncate(s string, width int, align rune, truncate bool) string {
 		}
 		endCol := startCol + width
 		s = ansiSlice(s, startCol, endCol)
-		cols = measureTextWidth(s)
+		cols = DefaultWidth.ansiStr(s)
 	}
 	// pad
 	pad := width - cols
@@ -397,6 +446,49 @@ func padAndTruncate(s string, width int, align rune, truncate bool) string {
 	return strings.Repeat(" ", leftPad) + s + strings.Repeat(" ", rightPad)
 }
 
+// ansiSegment 是 Rust 的 `AnsiCodeIterator::new(s)` 产出的一个 (片段, 是否 ANSI) 对。
+type ansiSegment struct {
+	text   string
+	isAnsi bool
+}
+
+// ansiSegments 对应 Rust 的 `AnsiCodeIterator`：把字符串切成 ANSI 段与可见段。
+//
+// 逐**字节**扫描即可（ESC 与 CSI 结束符都是 ASCII），但拼接必须按字节累积：
+// 之前写的是 `run += string(c)`，把字节当 rune 转，多字节 UTF-8 直接被拆坏
+// （"国" 的三个字节 E5 9B BD 变成 å / U+009B / ½），换行度量与截断就都错了。
+func ansiSegments(s string) []ansiSegment {
+	segments := make([]ansiSegment, 0)
+	run := make([]byte, 0, len(s))
+	flush := func(isAnsi bool) {
+		if len(run) == 0 {
+			return
+		}
+		segments = append(segments, ansiSegment{string(run), isAnsi})
+		run = run[:0]
+	}
+	inAnsi := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !inAnsi {
+			if c == '\x1b' {
+				flush(false)
+				inAnsi = true
+			}
+		}
+		run = append(run, c)
+		if inAnsi {
+			// end of CSI: letter in A-Za-z
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				flush(true)
+				inAnsi = false
+			}
+		}
+	}
+	flush(inAnsi)
+	return segments
+}
+
 // ansiSlice returns the substring of s that corresponds to visible columns
 // in the range [start, end), preserving ANSI escape sequences surrounding
 // the included visible text.
@@ -409,48 +501,7 @@ func ansiSlice(s string, start, end int) string {
 	}
 
 	// split into segments: ANSI sequences and normal text
-	segments := make([]struct {
-		text   string
-		isAnsi bool
-	}, 0)
-	run := ""
-	inAnsi := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !inAnsi {
-			if c == '\x1b' {
-				// flush run
-				if run != "" {
-					segments = append(segments, struct {
-						text   string
-						isAnsi bool
-					}{run, false})
-					run = ""
-				}
-				inAnsi = true
-				run += string(c)
-			} else {
-				run += string(c)
-			}
-		} else {
-			run += string(c)
-			// end of CSI: letter in A-Za-z
-			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-				segments = append(segments, struct {
-					text   string
-					isAnsi bool
-				}{run, true})
-				run = ""
-				inAnsi = false
-			}
-		}
-	}
-	if run != "" {
-		segments = append(segments, struct {
-			text   string
-			isAnsi bool
-		}{run, inAnsi})
-	}
+	segments := ansiSegments(s)
 
 	// 对应 Rust 的 write_ansi_range：
 	//   for (s, is_ansi) in AnsiCodeIterator::new(text) {
@@ -471,10 +522,8 @@ func ansiSlice(s string, start, end int) string {
 			continue
 		}
 		for _, r := range []rune(seg.text) {
-			w := runewidth.RuneWidth(r)
-			if w < 0 {
-				w = 0
-			}
+			// Rust：`let c_width = WIDTH.char(c);`
+			w := DefaultWidth.char(r)
 			// Rust：`start <= pos && pos + c_width <= end` —— 宽字符一旦跨界就整个不写，
 			// Go 之前是 `col < end`，跨界时也写，会多占一列。
 			if start <= col && col+w <= end {
@@ -1110,7 +1159,17 @@ func ProgressStyleWithTemplate(template string) (ProgressStyle, error) {
 }
 
 // formatBar 返回一个字符串表示的进度条，width 为目标可用列数（近似）。
-func (ps *ProgressStyle) formatBar(fract float32, width int, altStyle *Style, forStderr bool) string {
+// formatBar 对应 Rust 的 `ProgressStyle::format_bar(fract, width, style, alt_style)`：
+//
+//	BarDisplay {
+//	    filled: style.unwrap_or(&Style::new()).apply_to(FilledDisplay { .. }),
+//	    rest:   alt_style.or(style).unwrap_or(&Style::new()).apply_to(rest),
+//	}
+//
+// 即：**已填充段**用 `style`，**背景段**用 `alt_style`，没给 alt_style 时回落到 style。
+// 两段各自上色（各带一条复位），所以 `{bar:40.red/blue}` 是「红进度 + 蓝底」，
+// `{bar:40.red}` 是「红进度 + 红底」，而不只是给背景上色。
+func (ps *ProgressStyle) formatBar(fract float32, width int, style *Style, altStyle *Style, forStderr bool) string {
 	// Rust：`let width = width / self.char_width;` —— 没有兜底值：
 	// 终端太窄（width=0 或不足一个 cluster）时就是画空条，而不是强行画满 20 列。
 	charWidth := ps.charWidth
@@ -1157,11 +1216,10 @@ func (ps *ProgressStyle) formatBar(fract float32, width int, altStyle *Style, fo
 		}
 	}
 
-	// build bar by clusters
-	var b strings.Builder
-	// filled
+	// build the filled segment: `entirely_filled` full clusters + the "current" one
+	var filledBuilder strings.Builder
 	for i := 0; i < entirelyFilled; i++ {
-		b.WriteString(ps.progressChars[0])
+		filledBuilder.WriteString(ps.progressChars[0])
 	}
 	// current：Rust 是 `self.chars[cur]`（直接下标），Go 之前用 len-2-(cur-1) 把顺序弄反了
 	if curIdx != nil {
@@ -1175,7 +1233,7 @@ func (ps *ProgressStyle) formatBar(fract float32, width int, altStyle *Style, fo
 				idx = 0
 			}
 		}
-		b.WriteString(ps.progressChars[idx])
+		filledBuilder.WriteString(ps.progressChars[idx])
 	}
 	// background
 	bg := clusters - entirelyFilled
@@ -1185,17 +1243,21 @@ func (ps *ProgressStyle) formatBar(fract float32, width int, altStyle *Style, fo
 			bg = 0
 		}
 	}
-	// build background string (rest) and apply altStyle to it if provided
 	var restBuilder strings.Builder
 	for i := 0; i < bg; i++ {
 		restBuilder.WriteString(ps.progressChars[len(ps.progressChars)-1])
 	}
-	restStr := restBuilder.String()
-	if altStyle != nil {
-		restStr = altStyle.ApplyFor(restStr, forStderr)
+
+	// Rust：`style.unwrap_or(&Style::new())` —— 空样式就原样返回（Go 的 ApplyFor 已如此）
+	filledStr := style.ApplyFor(filledBuilder.String(), forStderr)
+	// Rust：`alt_style.or(style).unwrap_or(&Style::new())`
+	restStyle := altStyle
+	if restStyle == nil {
+		restStyle = style
 	}
-	b.WriteString(restStr)
-	return b.String()
+	restStr := restStyle.ApplyFor(restBuilder.String(), forStderr)
+
+	return filledStr + restStr
 }
 
 // SetProgressChars sets the progress characters sequence like "##-".

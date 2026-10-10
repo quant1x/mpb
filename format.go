@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
@@ -203,10 +206,24 @@ func (h HumanFloatCount) Format(s fmt.State, verb rune) {
 		intPart = num[:idx]
 		fracPart = strings.TrimRight(num[idx+1:], "0")
 	}
+	// Rust：符号要留在千分位分组**之外**，否则 '-' 会被当成一个数位，
+	// -100000 会渲染成 "-,100,000"。
+	sign := ""
+	digits := intPart
+	if strings.HasPrefix(digits, "-") {
+		sign = "-"
+		digits = digits[1:]
+	}
+	// Rust：负值可能在给定精度下舍入到零（`{:.0}` 作用于 -0.4 得 "-0"），
+	// -0.0 本身也是。全零时把符号去掉，避免出现光秃秃的 "-0"。
+	if fracPart == "" && strings.Trim(digits, "0") == "" {
+		sign = ""
+	}
 	// 整数部分插入千位分隔符
 	var b strings.Builder
-	l := len(intPart)
-	for i, ch := range intPart {
+	b.WriteString(sign)
+	l := len(digits)
+	for i, ch := range digits {
 		pos := l - i - 1
 		b.WriteRune(ch)
 		if pos > 0 && pos%3 == 0 {

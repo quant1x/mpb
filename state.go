@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
@@ -175,7 +178,10 @@ func (b *BarState) Tick(now time.Time) {
 }
 
 // Index 返回进度条在 MultiProgress 中的索引（如果存在）。
-func (b *BarState) Index() (int, bool) {
+//
+// 对应 Rust 的 `ProgressBar::index() -> Option<MultiStateIndex>`：不透明下标，类型是
+// usize（Go 侧即 uint），与屏幕位置无关 —— 要看第几行用 VisualIndex()。
+func (b *BarState) Index() (uint, bool) {
 	// If the draw target is a remoteDrawTarget, use its Remote() method to get the index
 	if _, idx, ok := b.drawTarget.Remote(); ok {
 		return idx, true
@@ -185,7 +191,7 @@ func (b *BarState) Index() (int, bool) {
 		md.ms.mu.RLock()
 		defer md.ms.mu.RUnlock()
 		for _, idx := range md.ms.ordering {
-			if idx < 0 || idx >= len(md.ms.members) {
+			if idx >= uint(len(md.ms.members)) {
 				continue
 			}
 			m := md.ms.members[idx]
@@ -560,8 +566,8 @@ type ProgressDrawTarget interface {
 	Drawable(force bool) Drawable
 	DrawableWithNow(force bool, now time.Time) Drawable
 	Width() *uint16
-	// 返回 (remoteState, idx, ok)
-	Remote() (*RemoteStub, int, bool)
+	// 返回 (remoteState, idx, ok)；idx 对应 Rust 的 `MultiStateIndex(usize)`
+	Remote() (*RemoteStub, uint, bool)
 	Disconnect(now time.Time)
 	AdjustLastLineCount(adjust LineAdjust)
 	// MarkZombie 对应 Rust 的 ProgressDrawTarget::mark_zombie：只有 Remote 变体（挂在
@@ -630,22 +636,53 @@ func visualLineCount(lines []LineType, contents []string, width int) VisualLines
 		} else {
 			c = ""
 		}
-		acc += wrappedHeightForContent(c, width)
+		// Rust：`visual_line_count` = 各行 `wrapped_height(width)` 之和
+		acc += wrappedMetrics(c, width).height
 	}
 	return acc
 }
 
-// wrappedHeightForContent computes wrapped visual height for a content string.
-func wrappedHeightForContent(s string, width int) VisualLines {
+// wrapMetrics 对应 Rust 的 `struct Metrics { height, last_line_width }`。
+type wrapMetrics struct {
+	height        VisualLines
+	lastLineWidth int
+}
+
+// wrappedMetrics 对应 Rust 的 `LineType::wrapped_metrics`（unicode-width 分支）：
+//
+//	let mut num_lines: usize = 1;
+//	let mut column: usize = 0;
+//	for (substr, is_ansi) in AnsiCodeIterator::new(str) {
+//	    if is_ansi { continue; }
+//	    for ch in substr.chars() {
+//	        let ch_width = WIDTH.char(ch);
+//	        column += ch_width;
+//	        if column > width { num_lines += 1; column = ch_width; }
+//	    }
+//	}
+//
+// 关键是**逐字符**推进：宽字符（如 CJK）在只剩 1 列时放不下，会整个挪到下一行，
+// 于是末尾留下一个空列 —— 之前按「总宽度 / 行宽」向上取整算行数，会少算一行。
+func wrappedMetrics(s string, width int) wrapMetrics {
 	if width <= 0 {
-		return VisualLines(1)
+		return wrapMetrics{height: VisualLines(1), lastLineWidth: 0}
 	}
-	cw := measureTextWidth(s)
-	terminalLen := (cw + width - 1) / width
-	if terminalLen < 1 {
-		terminalLen = 1
+	numLines := 1
+	column := 0
+	for _, seg := range ansiSegments(s) {
+		if seg.isAnsi {
+			continue
+		}
+		for _, ch := range seg.text {
+			chWidth := DefaultWidth.char(ch)
+			column += chWidth
+			if column > width {
+				numLines++
+				column = chWidth
+			}
+		}
 	}
-	return VisualLines(terminalLen)
+	return wrapMetrics{height: VisualLines(numLines), lastLineWidth: column}
 }
 
 // measureTextWidth approximates console::measure_text_width by stripping ANSI CSI sequences and returning rune count.
@@ -770,34 +807,30 @@ func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (Visual
 			content = ""
 		}
 
-		lineHeight := wrappedHeightForContent(content, termWidth)
+		metrics := wrappedMetrics(content, termWidth)
 
-		// For Bar lines we must check terminal height and may early-stop
+		// Rust：只有 Bar 行才计入 real_height 并在超出终端高度时提前收工
 		if lt == LineBar {
-			if realHeight.SaturatingAdd(lineHeight).AsInt() > int(term.Height()) {
+			if realHeight.SaturatingAdd(metrics.height).AsInt() > int(term.Height()) {
 				break
 			}
-			realHeight = realHeight.SaturatingAdd(lineHeight)
-		}
-
-		// Print a new line if this is not the first line printed this tick
-		// the first line will automatically wrap due to the filler below
-		if idx != 0 {
-			if err := term.WriteLine(""); err != nil {
-				return VisualLines(0), err
-			}
+			realHeight = realHeight.SaturatingAdd(metrics.height)
 		}
 
 		if err := term.WriteStr(content); err != nil {
 			return VisualLines(0), err
 		}
 
-		if idx+1 == len(ds.lines) {
-			filler := int(lineHeight)*termWidth - measureTextWidth(content)
-			if filler > 0 {
-				if err := term.WriteStr(strings.Repeat(" ", filler)); err != nil {
-					return VisualLines(0), err
-				}
+		// Rust（0.18.6）：**每一行**都补到行宽，让终端自己换行 ——
+		//
+		//	let line_filler = term_width.saturating_sub(metrics.last_line_width);
+		//	term.write_str(&" ".repeat(line_filler))?;
+		//
+		// 之前是「行间显式 write_line("")」+「只给最后一行补白」，行数一多就会错位。
+		filler := termWidth - metrics.lastLineWidth
+		if filler > 0 {
+			if err := term.WriteStr(strings.Repeat(" ", filler)); err != nil {
+				return VisualLines(0), err
 			}
 		}
 	}
@@ -1160,7 +1193,23 @@ func (s *SafeBarState) TabWidth() int {
 	defer s.mu.Unlock()
 	return s.inner.tabWidth
 }
-func (s *SafeBarState) Index() (int, bool) { s.mu.Lock(); defer s.mu.Unlock(); return s.inner.Index() }
+
+// Index 对应 Rust 的 `ProgressBar::index() -> Option<MultiStateIndex>`（usize → uint）。
+func (s *SafeBarState) Index() (uint, bool) { s.mu.Lock(); defer s.mu.Unlock(); return s.inner.Index() }
+
+// VisualIndex 对应 Rust 的 `ProgressBar::visual_index()`：
+// 取所属 MultiProgress 里的**屏幕位置**（ordering 中的下标）。
+func (s *SafeBarState) VisualIndex() (uint, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	remote, idx, ok := s.inner.drawTarget.Remote()
+	if !ok || remote == nil {
+		return 0, false
+	}
+	remote.ms.mu.RLock()
+	defer remote.ms.mu.RUnlock()
+	return remote.ms.visualIndex(idx)
+}
 
 func (s *SafeBarState) SetPrefix(prefix string) {
 	s.mu.Lock()

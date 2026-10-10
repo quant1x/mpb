@@ -1,0 +1,11 @@
+# mopr-license-header 兜底配置（仓库根）
+#
+# mpb 是 Rust 进度条库 indicatif 的 Go 移植，仓库内没有 pyproject.toml /
+# Cargo.toml / pom.xml 之类标准配置，所以按工具的兜底要求提供本文件。
+# 取值依据本仓库的 LICENSE：MIT，版权持有人 Quant1X。
+
+[copyright]
+holder = "Quant1X <wangfengxy@sina.cn>"
+
+[license]
+spdx = "MIT"

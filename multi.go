@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
+// SPDX-License-Identifier: MIT
+
 package mpb
 
 import (
@@ -7,8 +10,13 @@ import (
 
 // 简化的 MultiProgress / MultiState 实现，便于增量迁移。只实现必要的方法和数据结构，行为为保守的占位实现。
 
+// MultiProgress 对应 Rust 的 `pub struct MultiProgress { state: Arc<RwLock<MultiState>> }`。
+//
+// Rust 0.18.6 把 `state` 从 `pub(crate)` 改成了 `pub`（同时 `MultiState` 也 pub 了），
+// 便于外部直接读写 multi 的状态（成员、orphan 行、对齐方式等）。Go 这边照做：字段导出。
+// 注意 MultiState 自带 RWMutex，访问前要像 Rust 的 `read()/write()` 那样先加锁。
 type MultiProgress struct {
-	state *MultiState
+	State *MultiState
 }
 
 type MultiProgressAlignment int
@@ -27,7 +35,7 @@ func DefaultMultiProgress() *MultiProgress {
 }
 
 func WithDrawTarget(dt ProgressDrawTarget) *MultiProgress {
-	return &MultiProgress{state: NewMultiState(dt)}
+	return &MultiProgress{State: NewMultiState(dt)}
 }
 
 func (mp *MultiProgress) New() *MultiProgress { return DefaultMultiProgress() }
@@ -44,35 +52,36 @@ func (mp *MultiProgress) WithDrawTarget(dt ProgressDrawTarget) *MultiProgress {
 // Go 这边 MultiState 持有的是 multiDrawTarget 包装层，所以断开的是包装层里的旧目标，
 // 换上去的也重新包一层（包装层负责聚合出帧，不能直接丢）。
 func (mp *MultiProgress) SetDrawTarget(target ProgressDrawTarget) {
-	mp.state.mu.Lock()
-	defer mp.state.mu.Unlock()
-	mp.state.draw_target.Disconnect(time.Now())
-	mp.state.draw_target = &multiDrawTarget{ms: mp.state, inner: target}
+	mp.State.mu.Lock()
+	defer mp.State.mu.Unlock()
+	mp.State.draw_target.Disconnect(time.Now())
+	mp.State.draw_target = &multiDrawTarget{ms: mp.State, inner: target}
 }
 
 func (mp *MultiProgress) SetMoveCursor(moveCursor bool) {
-	mp.state.mu.Lock()
-	if setter, ok := mp.state.draw_target.(interface{ SetMoveCursor(bool) }); ok {
+	mp.State.mu.Lock()
+	if setter, ok := mp.State.draw_target.(interface{ SetMoveCursor(bool) }); ok {
 		setter.SetMoveCursor(moveCursor)
 	}
-	mp.state.mu.Unlock()
+	mp.State.mu.Unlock()
 }
 
 func (mp *MultiProgress) SetAlignment(alignment MultiProgressAlignment) {
-	mp.state.mu.Lock()
-	mp.state.alignment = alignment
-	mp.state.mu.Unlock()
+	mp.State.mu.Lock()
+	mp.State.alignment = alignment
+	mp.State.mu.Unlock()
 }
 
 func (mp *MultiProgress) Add(pb *ProgressBar) *ProgressBar {
 	return mp.internalize(InsertLocationEnd, 0, pb)
 }
 
-func (mp *MultiProgress) Insert(index int, pb *ProgressBar) *ProgressBar {
+// Insert / InsertFromBack 的 index 是 uint，对应 Rust 的 `insert(index: usize, ..)`。
+func (mp *MultiProgress) Insert(index uint, pb *ProgressBar) *ProgressBar {
 	return mp.internalize(InsertLocationIndex, index, pb)
 }
 
-func (mp *MultiProgress) InsertFromBack(index int, pb *ProgressBar) *ProgressBar {
+func (mp *MultiProgress) InsertFromBack(index uint, pb *ProgressBar) *ProgressBar {
 	return mp.internalize(InsertLocationIndexFromBack, index, pb)
 }
 
@@ -100,16 +109,16 @@ func (mp *MultiProgress) InsertAfter(after *ProgressBar, pb *ProgressBar) *Progr
 func (mp *MultiProgress) Remove(pb *ProgressBar) {
 	// Rust：`let idx = match &state.draw_target.remote() { Some((state, idx)) => { assert!(Arc::ptr_eq(&self.state, state)); *idx }, _ => return };`
 	remote, idx, ok := remoteTargetOf(pb)
-	if !ok || remote == nil || remote.ms != mp.state {
+	if !ok || remote == nil || remote.ms != mp.State {
 		return
 	}
 	// Rust：`state.draw_target = ProgressDrawTarget::hidden();`
 	// —— 注意这里是**直接替换字段**，不走 `set_draw_target`（也就不触发 disconnect）。
 	setDrawTargetNoDisconnect(pb, NewHiddenDrawTarget())
 
-	mp.state.mu.Lock()
-	defer mp.state.mu.Unlock()
-	mp.state.removeIdx(idx)
+	mp.State.mu.Lock()
+	defer mp.State.mu.Unlock()
+	mp.State.removeIdx(idx)
 }
 
 // setDrawTargetNoDisconnect 直接替换进度条的绘制目标，不触发旧目标的 disconnect。
@@ -127,7 +136,7 @@ func setDrawTargetNoDisconnect(pb *ProgressBar, dt ProgressDrawTarget) {
 }
 
 // remoteTargetOf 取进度条当前绘制目标上的 remote 信息，对应 Rust 的 `pb.state().draw_target.remote()`。
-func remoteTargetOf(pb *ProgressBar) (*RemoteStub, int, bool) {
+func remoteTargetOf(pb *ProgressBar) (*RemoteStub, uint, bool) {
 	if pb == nil || pb.state == nil {
 		return nil, 0, false
 	}
@@ -139,21 +148,19 @@ func remoteTargetOf(pb *ProgressBar) (*RemoteStub, int, bool) {
 	return pb.state.inner.drawTarget.Remote()
 }
 
-func (mp *MultiProgress) internalize(loc InsertLocation, pos int, pb *ProgressBar) *ProgressBar {
-	mp.state.mu.Lock()
-	idx := mp.state.insertWithPos(loc, pos)
+func (mp *MultiProgress) internalize(loc InsertLocation, pos uint, pb *ProgressBar) *ProgressBar {
+	mp.State.mu.Lock()
+	idx := mp.State.insertWithPos(loc, pos)
 	// register this ProgressBar's SafeBarState in members
-	if idx >= 0 && idx < len(mp.state.members) {
-		mp.state.members[idx].sb = pb.state
+	if idx < uint(len(mp.State.members)) {
+		mp.State.members[idx].sb = pb.state
 	}
 	// Rust：`drop(state)` —— 先放开 multi 的写锁，再去动进度条自己的绘制目标，
 	// 否则锁顺序（multi → bar）与别处（bar → multi）相反。
-	mp.state.mu.Unlock()
+	mp.State.mu.Unlock()
 
 	// ensure the bar draws into per-bar remote draw target so multi can identify it
-	if idx >= 0 {
-		pb.SetDrawTarget(NewRemoteDrawTarget(mp.state, idx))
-	}
+	pb.SetDrawTarget(NewRemoteDrawTarget(mp.State, idx))
 	return pb
 }
 
@@ -161,17 +168,17 @@ func (mp *MultiProgress) internalize(loc InsertLocation, pos int, pb *ProgressBa
 // to the owning MultiState while exposing remote information.
 type remoteDrawTarget struct {
 	ms  *MultiState
-	idx int
+	idx uint
 }
 
-func NewRemoteDrawTarget(ms *MultiState, idx int) ProgressDrawTarget {
+func NewRemoteDrawTarget(ms *MultiState, idx uint) ProgressDrawTarget {
 	return &remoteDrawTarget{ms: ms, idx: idx}
 }
 
 func (r *remoteDrawTarget) IsHidden() bool { return r.ms.draw_target.IsHidden() }
 func (r *remoteDrawTarget) IsStderr() bool { return r.ms.draw_target.IsStderr() }
 func (r *remoteDrawTarget) Width() *uint16 { return r.ms.draw_target.Width() }
-func (r *remoteDrawTarget) Remote() (*RemoteStub, int, bool) {
+func (r *remoteDrawTarget) Remote() (*RemoteStub, uint, bool) {
 	return &RemoteStub{ms: r.ms}, r.idx, true
 }
 
@@ -275,30 +282,30 @@ func (r *remoteDrawTarget) AggregateDrawOrigin(originLines []LineType, originCon
 
 // Println 对应 Rust 的 MultiProgress::println：返回底层 io 错误（之前恒返回 nil，错误被吞）。
 func (mp *MultiProgress) Println(msg string) error {
-	mp.state.mu.Lock()
-	defer mp.state.mu.Unlock()
-	_, err := mp.state.println(msg, time.Now())
+	mp.State.mu.Lock()
+	defer mp.State.mu.Unlock()
+	_, err := mp.State.println(msg, time.Now())
 	return err
 }
 
 func (mp *MultiProgress) Suspend(f func() interface{}) interface{} {
-	mp.state.mu.Lock()
-	defer mp.state.mu.Unlock()
-	return mp.state.suspend(f, time.Now())
+	mp.State.mu.Lock()
+	defer mp.State.mu.Unlock()
+	return mp.State.suspend(f, time.Now())
 }
 
 // Clear 对应 Rust 的 MultiProgress::clear：返回底层 io 错误（之前恒返回 nil，错误被吞）。
 func (mp *MultiProgress) Clear() error {
-	mp.state.mu.Lock()
-	defer mp.state.mu.Unlock()
-	_, err := mp.state.clear(time.Now())
+	mp.State.mu.Lock()
+	defer mp.State.mu.Unlock()
+	_, err := mp.State.clear(time.Now())
 	return err
 }
 
 func (mp *MultiProgress) IsHidden() bool {
-	mp.state.mu.RLock()
-	defer mp.state.mu.RUnlock()
-	return msIsHidden(mp.state)
+	mp.State.mu.RLock()
+	defer mp.State.mu.RUnlock()
+	return msIsHidden(mp.State)
 }
 func msIsHidden(ms *MultiState) bool { return ms.draw_target.IsHidden() }
 
@@ -306,8 +313,8 @@ func msIsHidden(ms *MultiState) bool { return ms.draw_target.IsHidden() }
 type MultiState struct {
 	mu               sync.RWMutex
 	members          []MultiStateMember
-	freeSet          []int
-	ordering         []int
+	freeSet          []uint
+	ordering         []uint
 	draw_target      ProgressDrawTarget
 	alignment        MultiProgressAlignment
 	orphanLines      []string
@@ -317,8 +324,8 @@ type MultiState struct {
 func NewMultiState(dt ProgressDrawTarget) *MultiState {
 	ms := &MultiState{
 		members:          []MultiStateMember{},
-		freeSet:          []int{},
-		ordering:         []int{},
+		freeSet:          []uint{},
+		ordering:         []uint{},
 		draw_target:      dt,
 		alignment:        MultiProgressAlignmentTop,
 		orphanLines:      []string{},
@@ -346,8 +353,8 @@ type MultiStateMember struct {
 
 // drawStateFor 对应 Rust 的 MultiState::draw_state(idx)：取成员的持久 DrawState
 // （没有就新建一个），并挂上 orphan 收集器 —— 文本行随后会被 Close() 剥到 orphan 队列。
-func (ms *MultiState) drawStateFor(idx int) *DrawStateWrapper {
-	if idx < 0 || idx >= len(ms.members) {
+func (ms *MultiState) drawStateFor(idx uint) *DrawStateWrapper {
+	if idx >= uint(len(ms.members)) {
 		return nil
 	}
 	m := &ms.members[idx]
@@ -359,8 +366,8 @@ func (ms *MultiState) drawStateFor(idx int) *DrawStateWrapper {
 
 // memberVisualLines 对应 Rust 里用 `member.draw_state.visual_line_count(..)` 数僵尸行：
 // 取的是成员**上次绘制**留下的行数，而不是重新格式化一遍。
-func (ms *MultiState) memberVisualLines(idx int, width int) VisualLines {
-	if idx < 0 || idx >= len(ms.members) {
+func (ms *MultiState) memberVisualLines(idx uint, width int) VisualLines {
+	if idx >= uint(len(ms.members)) {
 		return VisualLines(0)
 	}
 	if m := &ms.members[idx]; m.drawState != nil {
@@ -377,11 +384,11 @@ type multiDrawTarget struct {
 	agg   *aggregatedDrawable
 }
 
-func (m *multiDrawTarget) IsHidden() bool                   { return m.inner.IsHidden() }
-func (m *multiDrawTarget) IsStderr() bool                   { return m.inner.IsStderr() }
-func (m *multiDrawTarget) Width() *uint16                   { return m.inner.Width() }
-func (m *multiDrawTarget) Remote() (*RemoteStub, int, bool) { return m.inner.Remote() }
-func (m *multiDrawTarget) Disconnect(now time.Time)         { m.inner.Disconnect(now) }
+func (m *multiDrawTarget) IsHidden() bool                    { return m.inner.IsHidden() }
+func (m *multiDrawTarget) IsStderr() bool                    { return m.inner.IsStderr() }
+func (m *multiDrawTarget) Width() *uint16                    { return m.inner.Width() }
+func (m *multiDrawTarget) Remote() (*RemoteStub, uint, bool) { return m.inner.Remote() }
+func (m *multiDrawTarget) Disconnect(now time.Time)          { m.inner.Disconnect(now) }
 func (m *multiDrawTarget) MarkZombie() {
 	if mz, ok := m.inner.(interface{ MarkZombie() }); ok {
 		mz.MarkZombie()
@@ -526,8 +533,11 @@ func (a *aggregatedDrawable) Clear() error {
 
 func (a *aggregatedDrawable) Width() *uint16 { return a.mdt.inner.Width() }
 
-func (ms *MultiState) markZombie(index int) {
-	if index < 0 || index >= len(ms.members) {
+// markZombie / memberVisualLines / visualIndex / insertWithPos / removeIdx 的索引
+// 一律是 uint，对应 Rust 的 `MultiStateIndex(usize)` 与 `usize` 下标
+// （`visual_index()` 返回的也是 usize）。
+func (ms *MultiState) markZombie(index uint) {
+	if index >= uint(len(ms.members)) {
 		return
 	}
 	// If the zombie is not the first visual bar, mark and defer
@@ -565,7 +575,7 @@ func (ms *MultiState) draw(force bool, extraLines []LineType, extraContents []st
 		pt.kind.mu.Unlock()
 	}
 	// Reap consecutive zombies from head of ordering
-	var reapIndices []int
+	var reapIndices []uint
 	var adjust VisualLines = 0
 	for _, index := range ms.ordering {
 		member := ms.members[index]
@@ -669,7 +679,7 @@ func (ms *MultiState) draw(force bool, extraLines []LineType, extraContents []st
 	//   * 没绘制过的成员（draw_state 为 None）不出现在画面上；
 	//   * zombie 成员**不跳过**，它们要最后入帧一次，draw 结束才 remove_idx。
 	for _, idx := range ms.ordering {
-		if idx < 0 || idx >= len(ms.members) {
+		if idx >= uint(len(ms.members)) {
 			continue
 		}
 		m := ms.members[idx]
@@ -797,43 +807,53 @@ const (
 	InsertLocationBefore
 )
 
-func (ms *MultiState) insertWithPos(loc InsertLocation, pos int) int {
-	var idx int
+// visualIndex 对应 Rust 的 `MultiState::visual_index(opaque_index)`：
+// 把 `members` 的不透明下标映射到**屏幕位置**（ordering 里的第几个）。
+//
+// Rust 找不到时是 `.expect("no such member")`（panic）；Go 用第二个返回值表示。
+func (ms *MultiState) visualIndex(idx uint) (uint, bool) {
+	for i, v := range ms.ordering {
+		if v == idx {
+			return uint(i), true
+		}
+	}
+	return 0, false
+}
+
+func (ms *MultiState) insertWithPos(loc InsertLocation, pos uint) uint {
+	var idx uint
 	if len(ms.freeSet) > 0 {
 		idx = ms.freeSet[len(ms.freeSet)-1]
 		ms.freeSet = ms.freeSet[:len(ms.freeSet)-1]
 		ms.members[idx] = MultiStateMember{}
 	} else {
 		ms.members = append(ms.members, MultiStateMember{})
-		idx = len(ms.members) - 1
+		idx = uint(len(ms.members) - 1)
 	}
 
 	switch loc {
 	case InsertLocationEnd:
 		ms.ordering = append(ms.ordering, idx)
 	case InsertLocationIndex:
-		if pos < 0 {
-			pos = 0
+		// pos 是 uint：`pos > len(...)` 之外没有负数这一支（Rust 的 usize 同理）
+		if pos > uint(len(ms.ordering)) {
+			pos = uint(len(ms.ordering))
 		}
-		if pos > len(ms.ordering) {
-			pos = len(ms.ordering)
-		}
-		ms.ordering = append(ms.ordering[:pos], append([]int{idx}, ms.ordering[pos:]...)...)
+		ms.ordering = append(ms.ordering[:pos], append([]uint{idx}, ms.ordering[pos:]...)...)
 	case InsertLocationIndexFromBack:
-		// position counted from back
-		p := len(ms.ordering) - pos
-		if p < 0 {
-			p = 0
+		// Rust：`let pos = self.ordering.len().saturating_sub(pos);`
+		// Go 的 uint 减法会绕回，所以这里显式做 saturating_sub
+		var p uint
+		n := uint(len(ms.ordering))
+		if pos < n {
+			p = n - pos
 		}
-		if p > len(ms.ordering) {
-			p = len(ms.ordering)
-		}
-		ms.ordering = append(ms.ordering[:p], append([]int{idx}, ms.ordering[p:]...)...)
+		ms.ordering = append(ms.ordering[:p], append([]uint{idx}, ms.ordering[p:]...)...)
 	case InsertLocationAfter:
 		// pos is index of after
 		for i, v := range ms.ordering {
 			if v == pos {
-				ms.ordering = append(ms.ordering[:i+1], append([]int{idx}, ms.ordering[i+1:]...)...)
+				ms.ordering = append(ms.ordering[:i+1], append([]uint{idx}, ms.ordering[i+1:]...)...)
 				goto done
 			}
 		}
@@ -842,7 +862,7 @@ func (ms *MultiState) insertWithPos(loc InsertLocation, pos int) int {
 	case InsertLocationBefore:
 		for i, v := range ms.ordering {
 			if v == pos {
-				ms.ordering = append(ms.ordering[:i], append([]int{idx}, ms.ordering[i:]...)...)
+				ms.ordering = append(ms.ordering[:i], append([]uint{idx}, ms.ordering[i:]...)...)
 				goto done
 			}
 		}
@@ -852,7 +872,7 @@ done:
 	return idx
 }
 
-func (ms *MultiState) removeIdx(idx int) {
+func (ms *MultiState) removeIdx(idx uint) {
 	// if already removed, no-op
 	for _, v := range ms.freeSet {
 		if v == idx {
