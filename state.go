@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mattn/go-runewidth"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -720,7 +719,7 @@ func measureTextWidth(s string) int {
 		}
 		out = append(out, rs[i])
 	}
-	return runewidth.StringWidth(string(out))
+	return widthCondition().StringWidth(string(out))
 }
 
 // DrawStateStub.drawToTerm implements Rust's DrawState::draw_to_term semantics

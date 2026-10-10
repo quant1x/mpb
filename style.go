@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -375,24 +376,56 @@ type Width struct{}
 // DefaultWidth 对应 Rust 的 `pub(crate) static WIDTH: Width = Width::new()`。
 var DefaultWidth = Width{}
 
+// isCJKWide 对应 Rust `Width` 里的 `is_cjk: AtomicBool::new(false)`：**默认 false，不看环境**。
+var isCJKWide atomic.Bool
+
+// 预置两套 go-runewidth 口径。
+//
+// 这里**不能**用 runewidth.DefaultCondition：go-runewidth 会在 init() 里按控制台代码页
+// 把它自动切成 CJK 口径（Windows CP936/932/949/950 下 EastAsianWidth=true），于是
+// `█`(U+2588)、`░`(U+2591) 这类 East Asian Ambiguous 字符被算成 2 列宽。后果是
+// `formatBar` 里 `width / char_width` 直接砍半 —— 165 列的终端只画 80 来个块字符，
+// 而 drawToTerm 的补白又按同一份（偏大的）口径算，光标被推到整行最右侧。
+// 上游 Rust 默认口径是 `UnicodeWidthChar::width`（Ambiguous 按 1 列），从不这样。
+var (
+	condNarrow = newWidthCondition(false)
+	condCJK    = newWidthCondition(true)
+)
+
+// newWidthCondition 沿用 go-runewidth 的其它环境口径（StrictEmojiNeutral、ZWJ），
+// 只把"歧义宽度"这一项钉死成我们要的值。
+func newWidthCondition(eastAsian bool) *runewidth.Condition {
+	c := runewidth.NewCondition()
+	c.EastAsianWidth = eastAsian
+	return c
+}
+
+func widthCondition() *runewidth.Condition {
+	if isCJKWide.Load() {
+		return condCJK
+	}
+	return condNarrow
+}
+
 // SetDefaultCJK 对应 Rust 的 `Width::set_default_cjk(is_cjk)`。
 //
 // 打开后，"歧义宽度"字符（如 █、○、± 等 East Asian Ambiguous）按 2 列计算，
-// 适合 CJK 环境。底层落到 go-runewidth 的 EastAsianWidth 条件上（Rust 侧是
+// 适合终端**真的**把方块字符渲染成双宽的 CJK 环境（Rust 侧是
 // `UnicodeWidthChar::width_cjk` / `UnicodeWidthStr::width_cjk`）。
-func (Width) SetDefaultCJK(isCJK bool) { runewidth.DefaultCondition.EastAsianWidth = isCJK }
+// 只影响本包，不去改 go-runewidth 的全局 DefaultCondition。
+func (Width) SetDefaultCJK(isCJK bool) { isCJKWide.Store(isCJK) }
 
 // char 对应 `Width::char`：单个字符的列宽。控制字符为 0
 // （Rust 是 `c.width().unwrap_or(0)` —— 控制字符 width() 返回 None）。
 func (Width) char(r rune) int {
-	if w := runewidth.RuneWidth(r); w > 0 {
+	if w := widthCondition().RuneWidth(r); w > 0 {
 		return w
 	}
 	return 0
 }
 
 // str 对应 `Width::str`：不含 ANSI 的纯文本宽度（Rust 是 `UnicodeWidthStr::width`）。
-func (Width) str(s string) int { return runewidth.StringWidth(s) }
+func (Width) str(s string) int { return widthCondition().StringWidth(s) }
 
 // ansiStr 对应 `Width::ansi_str`：跳过 ANSI 段，其余各段按 str 累加。
 func (Width) ansiStr(s string) int { return measureTextWidth(s) }
