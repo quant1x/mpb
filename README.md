@@ -11,14 +11,21 @@
 | 上游仓库 | <https://github.com/console-rs/indicatif> |
 | **上游版本** | **0.18.6** |
 | **上游 commit** | **3adb05c80429415743d8142503c24fa8ee639453**（短号 `3adb05c`，2026-10-06） |
-| 上游本地副本 | `d:\projects\rust\indicatif` |
+| 上游本地副本 | `<UPSTREAM_DIR>` |
+
+本文档用尖括号表示需要自行替换的变量：
+
+- `<UPSTREAM_DIR>` —— 本地克隆 indicatif 的目录，例如 `d:/projects/rust/indicatif`
+- `<OLD_COMMIT>` —— 要对比的上游提交
 
 本仓库**不再随附** Rust 源码：上游的 `.rs`、`examples/`、`tests/`、`Cargo.toml` 等已全部移除，
-改 Go 时直接看上游本地副本（`d:\projects\rust\indicatif`）。要对比两个版本的差异：
+改 Go 时直接看 `<UPSTREAM_DIR>`。要对比两个版本的差异：
 
 ```powershell
-git -C d:/projects/rust/indicatif --no-pager diff <旧commit> HEAD -- src/
+git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 ```
+
+已知同步点：`<OLD_COMMIT>` 取 `3adb05c` 之前的那次提交，即可看到 0.18.6 这一批改动。
 
 ## 模块对照
 
