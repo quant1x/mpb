@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	termpkg "golang.org/x/term"
 )
@@ -36,31 +37,54 @@ type StdTerm struct {
 	// isTerm 对应 Rust 的 `console::Term::is_term()`：构造时探测到真实终端尺寸即为真终端。
 	// 写入目标是文件/管道时是 false —— Rust 的 `is_hidden()` 会据此把整条进度条隐藏。
 	isTerm bool
+
+	// 下面三个字段对应 console::Term 的 `inner.buffer: Option<Mutex<Vec<u8>>>`：
+	// Some(..) 时 `write_str` 只往缓冲里追加，`flush()` 才一次性 write_through。
+	//
+	// 上游的 `stdout()` / `stderr()` 分别是 `Term::buffered_stdout()` /
+	// `buffered_stderr()` —— 也就是说**默认目标都是带缓冲的**，一帧里的
+	// move_cursor_up / clear_line / 逐行内容 / 补白 这几十次 write_str 最终只合成
+	// 一次 write(2)（indicatif 在 draw_to_term 末尾调 term.flush()）。
+	// 这是"不闪"的关键：终端只在帧结束时重绘一次。
+	//
+	// 之前这里是每次 write_str 都直接 write，一帧几十次系统调用，终端在"清屏"和
+	// "重画"之间反复重绘，肉眼就是闪烁；系统调用次数也跟着涨。
+	buffered bool
+	mu       sync.Mutex
+	buf      []byte
 }
 
-// NewStdTerm 使用 stdout 创建默认终端（宽度 80，高度 20，可在需要时扩展）。
+// NewStdTerm 使用 stdout 创建默认终端，对应 Rust 的 `Term::buffered_stdout()`
+// （`ProgressDrawTarget::stdout()` 用的就是这个，带缓冲）。
 func NewStdTerm() *StdTerm {
 	w := os.Stdout
 	if width, height, err := termpkg.GetSize(int(w.Fd())); err == nil {
-		return &StdTerm{w: w, file: w, width: uint16(width), height: uint16(height), isTerm: true}
+		return &StdTerm{w: w, file: w, width: uint16(width), height: uint16(height), isTerm: true, buffered: true}
 	}
-	return &StdTerm{w: os.Stdout, file: os.Stdout, width: 80, height: 20}
+	return &StdTerm{w: os.Stdout, file: os.Stdout, width: 80, height: 20, buffered: true}
 }
 
 // NewStderrTerm 使用 stderr 创建终端，对应 Rust 的 `Term::buffered_stderr()`。
 // 进度条的默认绘制目标是 stderr，所以 `ProgressDrawTarget::stderr()` 走的是这个。
-func NewStderrTerm() *StdTerm { return NewStdTermWithWriter(os.Stderr) }
+func NewStderrTerm() *StdTerm { return newStdTermWithWriter(os.Stderr, true) }
 
 // NewStdTermWithWriter creates a StdTerm that writes to the provided writer.
-func NewStdTermWithWriter(w io.Writer) *StdTerm {
+//
+// 注意：这个便捷构造**不带缓冲**（写什么立刻进 writer）。上游没有直接对应的构造，
+// 带缓冲的那两个是 `buffered_stdout()` / `buffered_stderr()` —— 要走缓冲语义请用
+// NewStdTerm / NewStderrTerm。
+func NewStdTermWithWriter(w io.Writer) *StdTerm { return newStdTermWithWriter(w, false) }
+
+// newStdTermWithWriter 是内部构造：buffered 决定是否启用 console::Term 的 inner.buffer。
+func newStdTermWithWriter(w io.Writer, buffered bool) *StdTerm {
 	// Try to derive terminal size if writer is an *os.File
 	if f, ok := w.(*os.File); ok {
 		if width, height, err := termpkg.GetSize(int(f.Fd())); err == nil {
-			return &StdTerm{w: w, file: f, width: uint16(width), height: uint16(height), isTerm: true}
+			return &StdTerm{w: w, file: f, width: uint16(width), height: uint16(height), isTerm: true, buffered: buffered}
 		}
-		return &StdTerm{w: w, file: f, width: 80, height: 20}
+		return &StdTerm{w: w, file: f, width: 80, height: 20, buffered: buffered}
 	}
-	return &StdTerm{w: w, width: 80, height: 20}
+	return &StdTerm{w: w, width: 80, height: 20, buffered: buffered}
 }
 
 // IsTerm 对应 Rust 的 `console::Term::is_term()`：是不是真实终端（而非文件/管道）。
@@ -104,8 +128,15 @@ func (t *StdTerm) writeEscape(format string, a ...interface{}) error {
 	if t.w == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(t.w, format, a...)
-	return err
+	if !t.buffered {
+		_, err := fmt.Fprintf(t.w, format, a...)
+		return err
+	}
+	// 对应 Rust：`term.write_str(&format!(...))` —— 带缓冲时进 buf，不落盘。
+	t.mu.Lock()
+	t.buf = fmt.Appendf(t.buf, format, a...)
+	t.mu.Unlock()
+	return nil
 }
 
 func (t *StdTerm) MoveCursorUp(n int) error {
@@ -145,7 +176,26 @@ func (t *StdTerm) WriteLine(s string) error {
 	}
 	return nil
 }
-func (t *StdTerm) WriteStr(s string) error { _, err := io.WriteString(t.w, s); return err }
+
+// WriteStr 对应 Rust 的 `Term::write_str()`：
+//
+//	match self.inner.buffer {
+//	    Some(ref buffer) => buffer.lock().unwrap().write_all(s.as_bytes()),
+//	    None => self.write_through(s.as_bytes()),
+//	}
+func (t *StdTerm) WriteStr(s string) error {
+	if t.w == nil {
+		return nil
+	}
+	if !t.buffered {
+		_, err := io.WriteString(t.w, s)
+		return err
+	}
+	t.mu.Lock()
+	t.buf = append(t.buf, s...)
+	t.mu.Unlock()
+	return nil
+}
 
 // ClearLine 使用 ANSI 序列清除当前行并回到行首。
 func (t *StdTerm) ClearLine() error {
@@ -153,11 +203,38 @@ func (t *StdTerm) ClearLine() error {
 	return t.writeEscape("\r\x1b[2K")
 }
 
-// Flush 如果底层 writer 实现了 Flusher 接口则调用 Flush。
+// Flush 对应 Rust 的 `Term::flush()`：
+//
+//	if let Some(ref buffer) = self.inner.buffer {
+//	    let mut buffer = buffer.lock().unwrap();
+//	    if !buffer.is_empty() {
+//	        self.write_through(&buffer[..])?;   // 一次性落盘
+//	        buffer.clear();
+//	    }
+//	}
+//
+// 一帧只 flush 一次（indicatif 在 draw_to_term 末尾调），所以终端每帧只重绘一次 ——
+// 这就是"丝滑"与"闪"的分界：带缓冲时清屏与重画合成一次写，不带缓冲时终端会看到
+// 中间的清屏状态。不带缓冲时退化成原来"底层 writer 有 Flush 就调"的行为。
 func (t *StdTerm) Flush() error {
 	type flusher interface{ Flush() error }
-	if f, ok := t.w.(flusher); ok {
-		return f.Flush()
+	if !t.buffered {
+		if f, ok := t.w.(flusher); ok {
+			return f.Flush()
+		}
+		return nil
 	}
+	if t.w == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.buf) == 0 {
+		return nil
+	}
+	if _, err := t.w.Write(t.buf); err != nil {
+		return err
+	}
+	t.buf = t.buf[:0]
 	return nil
 }

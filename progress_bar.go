@@ -60,11 +60,19 @@ func NewWithDrawTarget(length *uint64, dt ProgressDrawTarget) *ProgressBar {
 }
 
 // Inc 增加位置。
+//
+// 对应 Rust：
+//
+//	self.pos.inc(delta);
+//	let now = Instant::now();
+//	if self.pos.allow(now) {
+//	    self.tick_inner(now);   // ← now 是**同一个**时刻，不会重取
+//	}
 func (p *ProgressBar) Inc(delta uint64) {
 	p.pos.Inc(delta)
 	now := time.Now()
 	if p.pos.Allow(now) {
-		p.tick()
+		p.tick(now)
 	}
 }
 
@@ -73,7 +81,7 @@ func (p *ProgressBar) Dec(delta uint64) {
 	p.pos.Dec(delta)
 	now := time.Now()
 	if p.pos.Allow(now) {
-		p.tick()
+		p.tick(now)
 	}
 }
 
@@ -82,7 +90,7 @@ func (p *ProgressBar) SetPosition(pos uint64) {
 	p.pos.Set(pos)
 	now := time.Now()
 	if p.pos.Allow(now) {
-		p.tick()
+		p.tick(now)
 	}
 }
 
@@ -143,11 +151,20 @@ func (p *ProgressBar) DisableSteadyTick() {
 }
 
 // tick 触发一次绘制，对应 Rust 的 tick_inner：只在没有安装 steady ticker 时动手。
-func (p *ProgressBar) tick() {
+//
+//	fn tick_inner(&self, now: Instant) {
+//	    if self.ticker.lock().unwrap().is_none() {
+//	        self.state().tick(now);
+//	    }
+//	}
+//
+// now 由调用方传进来（Rust 也是复用同一个 Instant），不再重取时钟 —— 超大总数的任务
+// 里每步一次时钟读取会累积成可观的开销。
+func (p *ProgressBar) tick(now time.Time) {
 	if p.state.hasTicker() {
 		return
 	}
-	p.state.Tick(time.Now())
+	p.state.Tick(now)
 }
 
 // Message 返回当前消息。

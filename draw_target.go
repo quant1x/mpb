@@ -387,7 +387,8 @@ func (d *simpleDrawable) Draw() error {
 			if d.owner.kind.termTerm != nil {
 				term = d.owner.kind.termTerm
 			} else {
-				term = NewStdTermWithWriter(out)
+				// 这里写的是真实 stderr，对应上游的 Term 变体（buffered_*），用带缓冲构造
+				term = newStdTermWithWriter(out, true)
 			}
 			// call centralized draw logic which will update per-variant last-line count
 			switch d.owner.kind.variant {

@@ -6,6 +6,7 @@ package mpb
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -128,6 +129,84 @@ func TestMeasureTextWidthMatchesUpstream(t *testing.T) {
 	// ZWJ 不特殊处理：与 Width.str 同口径（上游交给 unicode-width 的字形簇逻辑）
 	if got, want := measureTextWidth("👨\u200d👩"), DefaultWidth.str("👨\u200d👩"); got != want {
 		t.Errorf("ZWJ 不应被特殊处理：measureTextWidth = %d，Width.str = %d", got, want)
+	}
+}
+
+type countingWriter struct {
+	writes int
+	bytes  int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	w.bytes += len(p)
+	return len(p), nil
+}
+
+// TestStdTermWritesOneBufferPerFrame 锁住"不闪"的关键。
+//
+// 上游的 stdout() / stderr() 是 `Term::buffered_stdout()` / `buffered_stderr()`
+// —— console::Term 的 `inner.buffer` 是 Some(..)，write_str 只进缓冲，
+// indicatif 在 `draw_to_term` 末尾调 `term.flush()` 一次落盘。于是一帧里的
+// move_cursor_up / clear_line / 逐行内容 / 补白这几十次 write_str 合成**一次** write(2)，
+// 终端每帧只重绘一次 —— 这就是"丝滑"。
+//
+// 之前这里每次 write_str 都直接 write：一帧几十次系统调用，终端在"清屏"和"重画"
+// 之间反复重绘（肉眼就是闪烁），系统调用次数也跟着涨。
+func TestStdTermWritesOneBufferPerFrame(t *testing.T) {
+	newState := func() *DrawState {
+		return &DrawState{
+			lines:    []LineType{LineBar, LineBar},
+			contents: []string{"first line", "second line"},
+		}
+	}
+
+	const frames = 5
+
+	// 带缓冲：每帧一次 write（flush）
+	cw := &countingWriter{}
+	term := newStdTermWithWriter(cw, true)
+	for i := 0; i < frames; i++ {
+		if _, err := newState().drawToTerm(term, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cw.writes != frames {
+		t.Fatalf("带缓冲时每帧应只写 1 次：%d 帧共写 %d 次（应 %d）", frames, cw.writes, frames)
+	}
+
+	// 不带缓冲：同一帧会拆成多次写（闪烁与系统调用开销的来源），用来证明上面那条不是白测
+	raw := &countingWriter{}
+	rawTerm := newStdTermWithWriter(raw, false)
+	if _, err := newState().drawToTerm(rawTerm, 0); err != nil {
+		t.Fatal(err)
+	}
+	if raw.writes <= 1 {
+		t.Fatalf("不带缓冲时一帧应拆成多次写，实际 %d 次", raw.writes)
+	}
+}
+
+// TestRateLimiterThrottlesToRefreshHz 对齐上游 RateLimiter 的口径：
+// 默认刷新率 20Hz（interval = 1000/20 = 50ms），突发上限 MAX_BURST = 20。
+//
+// 上游 `drawable(force_draw, now)` 里是 `force_draw || rate_limiter.allow(now)`，
+// 所以**不是每个 tick 都会重绘**：tight loop 里每秒上千次 Inc，真正落盘的只有 ~20 帧。
+func TestRateLimiterThrottlesToRefreshHz(t *testing.T) {
+	rl := newRateLimiter(20)
+	base := time.Now()
+
+	const calls = 1000 // 每 1ms 一次调用，共 1 秒
+	allowed := 0
+	for i := 0; i < calls; i++ {
+		if rl.allow(base.Add(time.Duration(i) * time.Millisecond)) {
+			allowed++
+		}
+	}
+
+	// 起始突发 20 次，之后每 50ms 放行一次 → 1 秒内约 20 + 19 = 39 次
+	if allowed < 30 || allowed > 50 {
+		t.Fatalf("20Hz 限流器 1 秒内放行 %d/%d 次（上游口径约 39：突发 20 + 每秒 20），节流失效？",
+			allowed, calls)
 	}
 }
 
