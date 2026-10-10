@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-10
+### Changed
+- docs：来源说明改用变量写法描述本地路径
+  - README：上游本地副本改用 `<UPSTREAM_DIR>`，对比命令里的 `<旧commit>` 统一为 `<OLD_COMMIT>`
+  - 新增变量说明段：尖括号表示需自行替换的变量；具体路径只作为「例如」出现一次，
+    正文与命令里一律用变量
+  - 补一句已知同步点：`<OLD_COMMIT>` 取 `3adb05c` 之前那次提交，即可看到 0.18.6 这批改动
+  - CHANGELOG 里的同名路径是提交 31218eb 的提交信息原文，属于历史记录，保持不动
+- release version 0.1.1
+
 ## [0.1.0] - 2026-10-10
 ### Changed
 - 删除test目录的测试代码
@@ -74,7 +84,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.0...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.1...HEAD
+[0.1.1]: https://gitee.com/quant1x/mpb/compare/v0.1.0...v0.1.1
 [0.1.0]: https://gitee.com/quant1x/mpb/compare/v0.0.1...v0.1.0
 
 [0.0.1]: https://gitee.com/quant1x/mpb/releases/tag/v0.0.1
