@@ -4,72 +4,53 @@ import (
 	"sync"
 )
 
-// 简化的 Rayon 移植：提供把切片或已有 ProgressBarIter 并行执行的辅助方法。
-// 目标是支持基本的并行映射（MapParallel），并在每处理一个元素时更新进度条。
+// 本文件对应 Rust 的 rayon.rs（并行迭代器适配）。
+//
+// 说明：Rust 里串行迭代器（std::iter::Iterator）与并行迭代器（rayon::ParallelIterator）是两套
+// trait，所以 iter.rs 与 rayon.rs 各有一组 progress / progress_count / progress_with /
+// progress_with_style。Go 没有这层区分：同一个 *ProgressBarIter[T] 既被 Next() 串行消费，
+// 也被下面的 MapParallel 并行消费，那组构造器因此只有一份，放在 iter.go 里共用
+// （不另造一套"并行版"构造器，免得同一语义出现两个入口）。
 
-// ProgressWithSlice 使用指定的进度条包装切片，返回一个 ProgressBarIter。
-func ProgressWithSlice[T any](slice []T, pb *ProgressBar) *ProgressBarIter[T] {
-	return NewProgressBarIterFromSlice(slice, pb)
-}
-
-// ProgressCount 为切片创建一个新的进度条并返回包装器。
-func ProgressCount[T any](slice []T, count uint64) *ProgressBarIter[T] {
-	return NewProgressBarIterFromSlice(slice, New(count))
-}
-
-// Progress 使用切片长度创建进度条并返回包装器。
-func Progress[T any](slice []T) *ProgressBarIter[T] {
-	return ProgressCount(slice, uint64(len(slice)))
-}
-
-// ProgressWithStyle 为切片创建进度条并设置样式。
-func ProgressWithStyle[T any](slice []T, style ProgressStyle) *ProgressBarIter[T] {
-	pb := New(uint64(len(slice)))
-	pb.SetStyle(style)
-	return NewProgressBarIterFromSlice(slice, pb)
-}
-
-// MapParallel 对 ProgressBarIter 的元素并行执行函数 fn（worker 数量可控），返回结果切片。
-// 每处理一个元素会调用底层进度条的 Inc(1)。
+// MapParallel 对应 Rust 里对包装后的并行迭代器做 `map(...).collect()`：
+//   - 与 ProgressFolder::consume 一致：每消费一个元素 inc(1)（先推进再干活）；
+//   - 与 IndexedParallelIterator 的 collect 一致：**结果按输入顺序排列**
+//     （原来的实现从 out channel 里先到先收，顺序是乱的）；
+//   - 与 Rust 一致：消费完不收尾进度条（Folder::complete 只 complete 底层，
+//     不调 finish；是否收尾由调用方决定）；
+//   - 迭代器被消费掉（Rust 的 drive 取得所有权），消费后 Len() 为 0。
+//
+// workers 对应 rayon 的分片并发度：Rust 那边由全局线程池决定，Go 这里显式给。
 func MapParallel[T any, U any](p *ProgressBarIter[T], workers int, fn func(T) U) []U {
 	if workers <= 0 {
 		workers = 1
 	}
-	in := make(chan T)
-	out := make(chan U)
-	var wg sync.WaitGroup
 
-	// 启动 worker
+	items := p.it[p.idx:p.end]
+	res := make([]U, len(items))
+
+	in := make(chan int)
+	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for itm := range in {
-				res := fn(itm)
+			for j := range in {
 				if p.progress != nil {
 					p.progress.Inc(1)
 				}
-				out <- res
+				res[j] = fn(items[j])
 			}
 		}()
 	}
 
-	// 生产者和关闭协程
-	go func() {
-		for _, itm := range p.it {
-			in <- itm
-		}
-		close(in)
-		wg.Wait()
-		close(out)
-	}()
+	for j := range items {
+		in <- j
+	}
+	close(in)
+	wg.Wait()
 
-	res := make([]U, 0, len(p.it))
-	for v := range out {
-		res = append(res, v)
-	}
-	if p.progress != nil && !p.progress.IsFinished() {
-		p.progress.Finish()
-	}
+	// 消费掉迭代器（Rust 的 drive(self)）
+	p.idx = p.end
 	return res
 }

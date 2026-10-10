@@ -1,9 +1,7 @@
 package mpb
 
 import (
-	"fmt"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -79,8 +77,9 @@ func (b *BarState) FinishUsingStyle(now time.Time, finish ProgressFinish) {
 		b.state.message = NewTabExpandedString(finish.Msg, b.tabWidth)
 	}
 
-	// draw
-	_ = b.draw(true)
+	// There's no need to update the estimate here; once the status is no longer
+	// InProgress, we will use the length and elapsed time to estimate.
+	_ = b.drawWithNow(true, now)
 }
 
 // ResetMode 与 Rust 的 Reset
@@ -99,9 +98,14 @@ func (b *BarState) Reset(now time.Time, mode ResetMode) {
 	}
 	if mode == ResetAll {
 		b.state.pos.Reset(now)
-		b.state.status = StatusInProgress
-		// reset trackers if any (omitted detailed tracker implementations)
-		_ = b.draw(false)
+		b.state.status = StatusInProgress()
+
+		// Rust：`for tracker in self.style.format_map.values_mut() { tracker.reset(&self.state, now); }`
+		for _, tracker := range b.style.formatMap {
+			tracker.Reset(&b.state, now)
+		}
+
+		_ = b.drawWithNow(false, now)
 	}
 }
 
@@ -124,8 +128,13 @@ func (b *BarState) SetLength(now time.Time, l uint64) {
 }
 
 func (b *BarState) IncLength(now time.Time, delta uint64) {
+	// Rust：`len.saturating_add(delta)`
 	if b.state.len != nil {
-		*b.state.len = (*b.state.len) + delta
+		if *b.state.len > ^uint64(0)-delta {
+			*b.state.len = ^uint64(0)
+		} else {
+			*b.state.len = (*b.state.len) + delta
+		}
 	}
 	b.UpdateEstimateAndDraw(now)
 }
@@ -158,7 +167,10 @@ func (b *BarState) SetStyle(style ProgressStyle) {
 }
 
 func (b *BarState) Tick(now time.Time) {
-	b.state.tick = b.state.tick + 1
+	// Rust：`self.state.tick = self.state.tick.saturating_add(1)`
+	if b.state.tick != ^uint64(0) {
+		b.state.tick = b.state.tick + 1
+	}
 	b.UpdateEstimateAndDraw(now)
 }
 
@@ -189,14 +201,18 @@ func (b *BarState) UpdateEstimateAndDraw(now time.Time) {
 	pos := b.state.pos.Pos()
 	b.state.est.Record(pos, now)
 
-	// tick trackers omitted - call their tick functions if implemented
+	// Rust：`for tracker in self.style.format_map.values_mut() { tracker.tick(&self.state, now); }`
+	for _, tracker := range b.style.formatMap {
+		tracker.Tick(&b.state, now)
+	}
 
-	_ = b.draw(false)
+	_ = b.drawWithNow(false, now)
 }
 
 func (b *BarState) Println(now time.Time, msg string) {
 	width := b.drawTarget.Width()
-	drawable := b.drawTarget.Drawable(true)
+	// Rust：`self.draw_target.drawable(true, now)`
+	drawable := b.drawTarget.DrawableWithNow(true, now)
 	if drawable == nil {
 		return
 	}
@@ -219,7 +235,8 @@ func (b *BarState) Println(now time.Time, msg string) {
 	}
 
 	if w := width; w != nil {
-		if !b.state.IsFinished() {
+		// Rust：`if !matches!(self.state.status, Status::DoneHidden(_))` —— 只跳过 DoneHidden
+		if b.state.status.kind != StatusKindDoneHidden {
 			isErr := false
 			if b.drawTarget != nil {
 				isErr = b.drawTarget.IsStderr()
@@ -242,7 +259,8 @@ func (b *BarState) Suspend(now time.Time, f func() interface{}) interface{} {
 		return state.Suspend(f, now)
 	}
 
-	if d := b.drawTarget.Drawable(true); d != nil {
+	// Rust：`if let Some(drawable) = self.draw_target.drawable(true, now)`
+	if d := b.drawTarget.DrawableWithNow(true, now); d != nil {
 		_ = d.Clear()
 	}
 
@@ -253,6 +271,7 @@ func (b *BarState) Suspend(now time.Time, f func() interface{}) interface{} {
 
 func (b *BarState) draw(force bool) error { return b.drawWithNow(force, time.Now()) }
 func (b *BarState) drawWithNow(force bool, now time.Time) error {
+	// Rust：`force_draw |= self.state.is_finished()`（注释说本来不需要，留着是为了兼容历史行为）
 	force = force || b.state.IsFinished()
 	// If draw target supports aggregated draws (MultiProgress), delegate to it.
 	if agg, ok := b.drawTarget.(interface {
@@ -261,7 +280,7 @@ func (b *BarState) drawWithNow(force bool, now time.Time) error {
 		return agg.AggregateDrawBar(b, force, now)
 	}
 
-	drawable := b.drawTarget.Drawable(force)
+	drawable := b.drawTarget.DrawableWithNow(force, now)
 	if drawable == nil {
 		return nil
 	}
@@ -269,35 +288,51 @@ func (b *BarState) drawWithNow(force bool, now time.Time) error {
 	dsWrap := drawable.State()
 	ds := dsWrap.StatePtr
 	if width != nil {
-		if !b.state.IsFinished() {
+		// Rust 只跳过 `Status::DoneHidden`：finish/finish_with_message/abandon 属于
+		// DoneVisible，最终那一帧仍然要渲染出来。
+		if b.state.status.kind != StatusKindDoneHidden {
 			isErr := false
 			if b.drawTarget != nil {
 				isErr = b.drawTarget.IsStderr()
 			}
 			lines, contents := b.style.FormatState(&b.state, int(*width), isErr)
 			ds.lines = append(ds.lines, lines...)
-			for _, c := range contents {
-				ds.contents = append(ds.contents, c)
-			}
+			ds.contents = append(ds.contents, contents...)
 		}
 	}
+	// 对应 Rust 的 `drop(draw_state)`（DrawStateWrapper 的 Drop）
 	dsWrap.Close()
-	drawable.Draw()
-	return nil
+	return drawable.Draw()
 }
 
 // --- ProgressState ---
 
-type Status int
+// Status 对应 Rust 的 `enum Status { InProgress, DoneVisible(Duration), DoneHidden(Duration) }`。
+// 完成态必须携带落库时长（Rust 由 enum 的字段承载），ProgressState.Duration() 依赖它。
+type StatusKind int
 
 const (
-	StatusInProgress Status = iota
-	statusDoneVisible
-	statusDoneHidden
+	StatusKindInProgress StatusKind = iota
+	StatusKindDoneVisible
+	StatusKindDoneHidden
 )
 
-func StatusDoneVisible(d time.Duration) Status { return statusDoneVisible }
-func StatusDoneHidden(d time.Duration) Status  { return statusDoneHidden }
+type Status struct {
+	kind     StatusKind
+	duration time.Duration
+}
+
+// Kind 返回状态类别。
+func (s Status) Kind() StatusKind { return s.kind }
+
+// Duration 返回完成态落库的时长；进行中返回 0。
+func (s Status) Duration() time.Duration { return s.duration }
+
+func StatusInProgress() Status { return Status{kind: StatusKindInProgress} }
+func StatusDoneVisible(d time.Duration) Status {
+	return Status{kind: StatusKindDoneVisible, duration: d}
+}
+func StatusDoneHidden(d time.Duration) Status { return Status{kind: StatusKindDoneHidden, duration: d} }
 
 type ProgressState struct {
 	pos     *AtomicPosition
@@ -316,7 +351,7 @@ func NewProgressState(len *uint64, pos *AtomicPosition) ProgressState {
 		pos:     pos,
 		len:     len,
 		tick:    0,
-		status:  StatusInProgress,
+		status:  StatusInProgress(),
 		started: now,
 		est:     NewEstimator(now),
 		message: NewTabExpandedString("", DEFAULT_TAB_WIDTH),
@@ -325,7 +360,7 @@ func NewProgressState(len *uint64, pos *AtomicPosition) ProgressState {
 }
 
 func (ps *ProgressState) IsFinished() bool {
-	return ps.status != StatusInProgress
+	return ps.status.kind != StatusKindInProgress
 }
 
 func (ps *ProgressState) Fraction() float32 {
@@ -361,15 +396,41 @@ func (ps *ProgressState) Eta() time.Duration {
 	if sps == 0.0 {
 		return 0
 	}
-	return secsToDuration(float64((*ps.len)-pos) / sps)
+	// Rust：`len.saturating_sub(pos)`（pos 超过 len 时是 0，Go 之前会无符号下溢成巨大值）
+	remaining := uint64(0)
+	if *ps.len > pos {
+		remaining = *ps.len - pos
+	}
+	return secsToDuration(float64(remaining) / sps)
 }
 
+// Duration 返回预计总时长，对应 Rust 的 ProgressState::duration()：
+//   - 完成态（DoneVisible/DoneHidden）：返回落库的时长；
+//   - 进行中且已知长度：已用时间 + ETA（Rust 的 saturating_add）；
+//   - 进行中且未知长度：0。
 func (ps *ProgressState) Duration() time.Duration {
-	return ps.started.Sub(time.Now())
+	switch ps.status.kind {
+	case StatusKindDoneVisible, StatusKindDoneHidden:
+		return ps.status.duration
+	}
+	if ps.len == nil {
+		return 0
+	}
+	elapsed := ps.Elapsed()
+	eta := ps.Eta()
+	if elapsed > time.Duration(math.MaxInt64)-eta {
+		return time.Duration(math.MaxInt64)
+	}
+	return elapsed + eta
 }
 
+// PerSec 对应 Rust 的 per_sec：进行中用估算器的平滑速率；
+// 已完成则用「总步数 / 总耗时」这个真实平均速率（Rust 明确分了两支）。
 func (ps *ProgressState) PerSec() float64 {
-	return ps.est.StepsPerSecond(time.Now())
+	if ps.status.kind == StatusKindInProgress {
+		return ps.est.StepsPerSecond(time.Now())
+	}
+	return float64(ps.Pos()) / ps.Elapsed().Seconds()
 }
 
 func (ps *ProgressState) Elapsed() time.Duration { return time.Since(ps.started) }
@@ -452,7 +513,12 @@ func estimatorWeight(age float64) float64 {
 	return math.Pow(0.1, age/EXPONENTIAL_WEIGHTING_SECONDS)
 }
 
+// secsToDuration 对应 Rust 的 secs_to_duration：`s.trunc() as u64` 与 `(s.fract()*1e9) as u32`
+// 都是饱和转换（负数落到 0），所以负值一律得到零时长。
 func secsToDuration(s float64) time.Duration {
+	if s <= 0 || math.IsNaN(s) {
+		return 0
+	}
 	secs := int64(math.Trunc(s))
 	nanos := int64((s - float64(secs)) * 1e9)
 	return time.Duration(secs)*time.Second + time.Duration(nanos)*time.Nanosecond
@@ -484,15 +550,23 @@ func (t *TabExpandedString) SetTabWidth(w int) { t.tabWidth = w }
 // incremental translation. These will be replaced with full translations.
 
 // ProgressDrawTarget 接口：抽象出绘制目标的必要方法（逐步完善）
+// ProgressDrawTarget 接口：抽象出绘制目标的必要方法（逐步完善）
+//
+// Rust 侧的入口是 `drawable(force_draw, now)`，now 一路透传给速率限制器，
+// 所以 Go 这边以 DrawableWithNow 为准，Drawable(force) 只是「取当前时刻」的便捷包装。
 type ProgressDrawTarget interface {
 	IsHidden() bool
 	IsStderr() bool
 	Drawable(force bool) Drawable
+	DrawableWithNow(force bool, now time.Time) Drawable
 	Width() *uint16
 	// 返回 (remoteState, idx, ok)
 	Remote() (*RemoteStub, int, bool)
 	Disconnect(now time.Time)
 	AdjustLastLineCount(adjust LineAdjust)
+	// MarkZombie 对应 Rust 的 ProgressDrawTarget::mark_zombie：只有 Remote 变体（挂在
+	// MultiProgress 上的那条 bar）会真做事 —— 通知 MultiState 这条 bar 已"死亡"。
+	MarkZombie()
 }
 
 type DrawableStub interface {
@@ -622,32 +696,49 @@ func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (Visual
 	// to remove previously printed dynamic lines.
 	// (no debug logging)
 
-	// Conservatively always clear previous dynamic lines and reset cursor
-	// position instead of attempting move-cursor optimization. This is
-	// slightly less efficient but avoids complex cursor-positioning bugs
-	// that can cause bars to be written to the wrong lines.
+	// Rust 的两条分支：
+	//
+	//	if !self.lines.is_empty() && self.move_cursor {
+	//	    // 只把光标挪回首行 + 回车，靠新内容覆盖旧内容（减少闪烁）
+	//	    term.move_cursor_up(bar_count.as_usize().saturating_sub(1))?;
+	//	    term.write_str("\r")?;
+	//	} else {
+	//	    // console::clear_last_lines 的改写版：逐行清掉
+	//	    term.move_cursor_up(n.saturating_sub(1))?;
+	//	    for i in 0..n { term.clear_line()?; if i+1 != n { term.move_cursor_down(1)?; } }
+	//	    term.move_cursor_up(n.saturating_sub(1))?;
+	//	}
 	n := prevBarCount.AsInt()
-	// Debug: log prevBarCount and number of lines
-	fmt.Fprintf(os.Stderr, "drawToTerm: prevBarCount=%d, len(lines)=%d, len(contents)=%d\n", n, len(ds.lines), len(ds.contents))
 	up := prevBarCount.SaturatingSub(VisualLinesFromInt(1)).AsInt()
-	if up > 0 {
-		if err := term.MoveCursorUp(up); err != nil {
-			return VisualLines(0), err
-		}
-	}
-	for i := 0; i < n; i++ {
-		if err := term.ClearLine(); err != nil {
-			return VisualLines(0), err
-		}
-		if i+1 != n {
-			if err := term.MoveCursorDown(1); err != nil {
+	if len(ds.lines) > 0 && ds.move_cursor {
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
 				return VisualLines(0), err
 			}
 		}
-	}
-	if up > 0 {
-		if err := term.MoveCursorUp(up); err != nil {
+		if err := term.WriteStr("\r"); err != nil {
 			return VisualLines(0), err
+		}
+	} else {
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
+				return VisualLines(0), err
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := term.ClearLine(); err != nil {
+				return VisualLines(0), err
+			}
+			if i+1 != n {
+				if err := term.MoveCursorDown(1); err != nil {
+					return VisualLines(0), err
+				}
+			}
+		}
+		if up > 0 {
+			if err := term.MoveCursorUp(up); err != nil {
+				return VisualLines(0), err
+			}
 		}
 	}
 
@@ -655,7 +746,7 @@ func (ds *DrawState) drawToTerm(term TermLike, prevBarCount VisualLines) (Visual
 
 	// full height needed (including orphan/text and bar lines)
 	fullHeight := visualLineCount(ds.lines, ds.contents, termWidth)
-	fmt.Fprintf(os.Stderr, "drawToTerm: fullHeight=%d\n", fullHeight)
+	//fmt.Fprintf(os.Stderr, "drawToTerm: fullHeight=%d\n", fullHeight)
 
 	// shift for bottom alignment: write blank cleared lines
 	var shift VisualLines = 0
@@ -740,13 +831,13 @@ func (w *DrawStateWrapper) Reset() {
 	}
 }
 
-// Close performs the Drop-like behavior: filters non-bar lines into orphanLines
-// and leaves only bar lines in the wrapped state.
+// Close 对应 Rust 的 `impl Drop for DrawStateWrapper`：
+// 只有 orphan_lines 为 Some（即 multi 路径）时才把 Text/Empty 行移出去；
+// term 路径下这些行要留在 state 里照常绘制 —— 否则 Println 的消息会被整段丢掉。
 func (w *DrawStateWrapper) Close() {
-	if w.StatePtr == nil {
+	if w.StatePtr == nil || w.orphanLines == nil {
 		return
 	}
-	// If no orphan collector provided, simply strip non-bar lines from state
 	oldLines := w.StatePtr.lines
 	oldContents := w.StatePtr.contents
 	newLines := make([]LineType, 0, len(oldLines))
@@ -865,6 +956,19 @@ func (s *SafeBarState) disableTicker() {
 	s.stopTicker()
 }
 
+// hasTicker 报告当前是否装有 steady ticker（对应 Rust 的 `self.ticker.lock().unwrap().is_none()` 取反）。
+func (s *SafeBarState) hasTicker() bool {
+	s.mu.Lock()
+	t := s.ticker
+	s.mu.Unlock()
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.th != nil
+}
+
 func (s *SafeBarState) Tick(now time.Time) {
 	s.mu.Lock()
 	inner := s.inner
@@ -965,8 +1069,9 @@ func (s *SafeBarState) DrawWithNow(force bool, now time.Time) error {
 	return s.inner.drawWithNow(force, now)
 }
 func (s *SafeBarState) Println(now time.Time, msg string) {
-	// Build origin lines (message + formatted bar) under lock, then delegate to
-	// draw target's AggregateDrawOrigin if available to ensure atomic multi-bar draws.
+	// 对应 Rust 的 ProgressBar::println：只把**消息行**写进成员自己的 draw_state，
+	// 随后被 DrawStateWrapper::drop 剥到 MultiState 的 orphan_lines 里（出现在所有 bar 之上）。
+	// bar 自身那几行由成员渲染路径负责（Rust 是 member.draw_state），这里不要混进来。
 	s.mu.Lock()
 	inner := s.inner
 	var originLines []LineType
@@ -984,16 +1089,6 @@ func (s *SafeBarState) Println(now time.Time, msg string) {
 			} else {
 				originLines = append(originLines, LineText)
 				originContents = append(originContents, part)
-			}
-		}
-	}
-	// formatted bar lines
-	if wptr := inner.drawTarget.Width(); wptr != nil {
-		if !inner.state.IsFinished() {
-			lines, contents := inner.style.FormatState(&inner.state, int(*wptr), inner.drawTarget.IsStderr())
-			originLines = append(originLines, lines...)
-			for _, c := range contents {
-				originContents = append(originContents, c)
 			}
 		}
 	}
@@ -1055,6 +1150,16 @@ func (s *SafeBarState) Elapsed() time.Duration {
 	defer s.mu.Unlock()
 	return s.inner.state.Elapsed()
 }
+func (s *SafeBarState) Duration() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inner.state.Duration()
+}
+func (s *SafeBarState) TabWidth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inner.tabWidth
+}
 func (s *SafeBarState) Index() (int, bool) { s.mu.Lock(); defer s.mu.Unlock(); return s.inner.Index() }
 
 func (s *SafeBarState) SetPrefix(prefix string) {
@@ -1115,13 +1220,13 @@ func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.inner == nil {
-		fmt.Fprintf(os.Stderr, "FormatForWidth: s.inner == nil\n")
+		//fmt.Fprintf(os.Stderr, "FormatForWidth: s.inner == nil\n")
 		return nil, nil
 	}
 	// Only skip formatting if the status is DoneHidden (like Rust)
 	// DoneVisible should still be displayed
-	if s.inner.state.status == statusDoneHidden {
-		fmt.Fprintf(os.Stderr, "FormatForWidth: statusDoneHidden\n")
+	if s.inner.state.status.kind == StatusKindDoneHidden {
+		//fmt.Fprintf(os.Stderr, "FormatForWidth: statusDoneHidden\n")
 		return nil, nil
 	}
 	isErr := false
@@ -1129,6 +1234,6 @@ func (s *SafeBarState) FormatForWidth(width int) ([]LineType, []string) {
 		isErr = s.inner.drawTarget.IsStderr()
 	}
 	lines, contents := s.inner.style.FormatState(&s.inner.state, width, isErr)
-	fmt.Fprintf(os.Stderr, "FormatForWidth: returning len(lines)=%d, len(contents)=%d\n", len(lines), len(contents))
+	//fmt.Fprintf(os.Stderr, "FormatForWidth: returning len(lines)=%d, len(contents)=%d\n", len(lines), len(contents))
 	return lines, contents
 }

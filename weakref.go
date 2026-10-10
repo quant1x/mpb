@@ -3,6 +3,7 @@ package mpb
 import (
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -35,6 +36,18 @@ func (r *weakRegistry) registerState(s *SafeBarState) uint64 {
 	if first {
 		runtime.SetFinalizer(s, func(ss *SafeBarState) {
 			ss.stopTicker()
+			// Rust 的 `impl Drop for BarState`：
+			//   if self.state.is_finished() { self.draw_target.mark_zombie(); return; }
+			//   self.finish_using_style(Instant::now(), self.on_finish.clone());
+			//   self.draw_target.mark_zombie();
+			// 即：已完成的只通知 MultiProgress 转僵尸；未完成的先按 on_finish 收尾再通知。
+			// Go 没有析构函数，用 finalizer 近似（时间点不保证，语义照 Rust）。
+			if ss != nil && ss.inner != nil && ss.inner.drawTarget != nil {
+				if !ss.inner.state.IsFinished() {
+					ss.inner.FinishUsingStyle(time.Now(), ss.inner.onFinish)
+				}
+				ss.inner.drawTarget.MarkZombie()
+			}
 			r.mu.Lock()
 			p := uintptr(unsafe.Pointer(ss))
 			for _, iid := range r.stateToIDs[p] {

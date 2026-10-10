@@ -27,27 +27,37 @@ type StdTerm struct {
 	w      io.Writer
 	width  uint16
 	height uint16
+	// isTerm 对应 Rust 的 `console::Term::is_term()`：构造时探测到真实终端尺寸即为真终端。
+	// 写入目标是文件/管道时是 false —— Rust 的 `is_hidden()` 会据此把整条进度条隐藏。
+	isTerm bool
 }
 
 // NewStdTerm 使用 stdout 创建默认终端（宽度 80，高度 20，可在需要时扩展）。
 func NewStdTerm() *StdTerm {
 	w := os.Stdout
 	if width, height, err := termpkg.GetSize(int(os.Stdout.Fd())); err == nil {
-		return &StdTerm{w: w, width: uint16(width), height: uint16(height)}
+		return &StdTerm{w: w, width: uint16(width), height: uint16(height), isTerm: true}
 	}
 	return &StdTerm{w: os.Stdout, width: 80, height: 20}
 }
+
+// NewStderrTerm 使用 stderr 创建终端，对应 Rust 的 `Term::buffered_stderr()`。
+// 进度条的默认绘制目标是 stderr，所以 `ProgressDrawTarget::stderr()` 走的是这个。
+func NewStderrTerm() *StdTerm { return NewStdTermWithWriter(os.Stderr) }
 
 // NewStdTermWithWriter creates a StdTerm that writes to the provided writer.
 func NewStdTermWithWriter(w io.Writer) *StdTerm {
 	// Try to derive terminal size if writer is an *os.File
 	if f, ok := w.(*os.File); ok {
 		if width, height, err := termpkg.GetSize(int(f.Fd())); err == nil {
-			return &StdTerm{w: w, width: uint16(width), height: uint16(height)}
+			return &StdTerm{w: w, width: uint16(width), height: uint16(height), isTerm: true}
 		}
 	}
 	return &StdTerm{w: w, width: 80, height: 20}
 }
+
+// IsTerm 对应 Rust 的 `console::Term::is_term()`：是不是真实终端（而非文件/管道）。
+func (t *StdTerm) IsTerm() bool { return t.isTerm }
 
 func (t *StdTerm) Width() uint16  { return t.width }
 func (t *StdTerm) Height() uint16 { return t.height }

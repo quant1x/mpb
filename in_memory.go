@@ -15,12 +15,14 @@ import (
 // dispatches actions that update an internal screen buffer.
 
 // InMemoryTerm 是一个轻量的内存终端实现（对应 src/in_memory.rs）。
-// 它维护固定大小的字符缓冲区、光标位置和操作历史，方便在测试中断言输出。
+//
+// Rust 那边是 `Arc<Mutex<InMemoryTermState>>`（"so it can be freely cloned"），
+// Go 里 state 是指针，*InMemoryTerm 之间天然共享同一份 state，语义等价。
 type InMemoryTerm struct {
 	state *inMemoryTermState
 }
 
-// NewInMemoryTerm 使用指定的行数和列数创建一个新的内存终端。
+// NewInMemoryTerm 使用指定的行数和列数创建一个新的内存终端（Rust 里 rows/cols 必须 > 0）。
 func NewInMemoryTerm(rows uint16, cols uint16) *InMemoryTerm {
 	if rows == 0 || cols == 0 {
 		panic("rows and cols must be > 0")
@@ -29,59 +31,77 @@ func NewInMemoryTerm(rows uint16, cols uint16) *InMemoryTerm {
 }
 
 // Reset 重置终端内容为初始状态。
+// 对应 Rust 的 `*state = InMemoryTermState::new(..)`：改的是共享的 state 本体，
+// 所以所有共享该 state 的 InMemoryTerm 都能看到重置（不是只换自己那根指针）。
 func (t *InMemoryTerm) Reset() {
-	// lock the current state while replacing it to mimic Arc<Mutex<..>> behavior
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
-	t.state = newInMemoryTermState(t.state.height, t.state.width)
+	t.state.reset(t.state.height, t.state.width)
 }
 
-// Contents 返回当前屏幕的文本内容（去除行末空白，并去掉尾部空行）。
+// Contents 返回当前屏幕的文本内容（去掉行尾空白，并去掉尾部空行）。
+//
+// 对应 Rust 的 contents()：rev().skip_while(空).map(trim_end).rev().join("\n")。
+// 注意顺序：Rust 那边 vt100 的 `screen().rows(..)` 返回的行本身就不带尾部空格，所以「判空」和
+// 「trim」孰先孰后都一样；Go 的 buf 是空格填充的，必须先 trim 再判空，否则尾部空行会被当成非空。
 func (t *InMemoryTerm) Contents() string {
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
 
-	lines := make([]string, 0, t.state.height)
+	lines := make([]string, 0, int(t.state.height))
 	for r := 0; r < int(t.state.height); r++ {
-		line := strings.TrimRight(string(t.state.buf[r]), " ")
-		lines = append(lines, line)
+		lines = append(lines, strings.TrimRight(string(t.state.buf[r]), " "))
 	}
 
 	// 从末端去掉空行
-	i := len(lines) - 1
-	for i >= 0 && lines[i] == "" {
-		i--
+	end := len(lines)
+	for end > 0 && lines[end-1] == "" {
+		end--
 	}
-	if i < 0 {
-		return ""
-	}
-	return strings.Join(lines[:i+1], "\n")
+	return strings.Join(lines[:end], "\n")
 }
 
-// ContentsFormatted 返回每行后面附加重置 ANSI 序列的字节表示（行为接近原始实现）。
+// ContentsFormatted 返回每行后面附加重置 ANSI 序列的字节表示。
+// 与 Rust 一致：先去掉尾部空行，再给每行拼 "\x1b[m" + '\n'，最后砍掉末尾那个 '\n'
+// （保留末尾的 reset）。
 func (t *InMemoryTerm) ContentsFormatted() []byte {
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
 
-	reset := []byte("\x1b[m")
-	var buf bytes.Buffer
+	// 与 contents() 同序：先 trim 行尾，再去掉尾部空行（Rust 的 rows_formatted 同样先 skip_while 空行）
+	lines := make([]string, 0, int(t.state.height))
 	for r := 0; r < int(t.state.height); r++ {
-		line := string(t.state.buf[r])
-		line = strings.TrimRight(line, " ")
-		buf.WriteString(line)
+		lines = append(lines, strings.TrimRight(string(t.state.buf[r]), " "))
+	}
+	end := len(lines)
+	for end > 0 && lines[end-1] == "" {
+		end--
+	}
+	lines = lines[:end]
+
+	reset := []byte("\x1b[m")
+	total := 0
+	for _, l := range lines {
+		total += len(l) + len(reset) + 1
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(total)
+	for _, l := range lines {
+		buf.WriteString(l)
 		buf.Write(reset)
 		buf.WriteByte('\n')
 	}
-	// 移除最后一个换行，但保留最后的 reset
+	// Remove last newline again, but leave the reset code
 	out := buf.Bytes()
 	if len(out) > 0 {
-		// 每行至少有 reset 的长度 + 0..n chars + '\n', 所以安全地去掉最后一个 '\n'
 		out = out[:len(out)-1]
 	}
 	return out
 }
 
 // MovesSinceLastCheck 返回自上次检查以来的移动历史（并清空历史）。
+// 与 Rust 一致：对每条 Move 用 `writeln!(s, "{line:?}")` 打印，即 Debug 格式。
 func (t *InMemoryTerm) MovesSinceLastCheck() string {
 	t.state.mu.Lock()
 	hist := t.state.history
@@ -100,8 +120,8 @@ func (t *InMemoryTerm) MovesSinceLastCheck() string {
 		case "Right":
 			fmt.Fprintf(&b, "Right(%d)\n", m.n)
 		case "Str":
-			s := strings.ReplaceAll(m.s, "\"", "\\\"")
-			fmt.Fprintf(&b, "Str(\"%s\")\n", s)
+			// Rust 打印的是 Move::Str 的 Debug：外层引号由 Debug 加，内层做转义
+			fmt.Fprintf(&b, "Str(\"%s\")\n", debugEscapeStr(m.s))
 		case "NewLine":
 			b.WriteString("NewLine\n")
 		case "Clear":
@@ -113,7 +133,35 @@ func (t *InMemoryTerm) MovesSinceLastCheck() string {
 	return b.String()
 }
 
-// 以下实现 TermLike 接口
+// debugEscapeStr 近似 Rust `{:?}` 对 String 的 Debug 输出：
+// 转义引号/反斜杠/常见控制字符，其余不可打印字符用 `\u{..}` 表示。
+func debugEscapeStr(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u{%x}`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// 以下实现 TermLike 接口（与 Rust 的 `impl TermLike for InMemoryTerm` 一一对应）
+
 func (t *InMemoryTerm) Width() uint16 {
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
@@ -126,6 +174,9 @@ func (t *InMemoryTerm) Height() uint16 {
 	return t.state.height
 }
 
+// 说明：Rust 的 move_cursor_* 是「先记历史，再把转义序列喂给 parser，由 vt100 移动光标」；
+// Go 这里直接改光标位置，效果等价（parser 不参与 history 记录，见 vtePerformer）。
+
 func (t *InMemoryTerm) MoveCursorUp(n int) error {
 	if n == 0 {
 		return nil
@@ -137,9 +188,6 @@ func (t *InMemoryTerm) MoveCursorUp(n int) error {
 		t.state.cursorRow = 0
 	} else {
 		t.state.cursorRow -= n
-	}
-	if t.state.cursorRow < 0 {
-		t.state.cursorRow = 0
 	}
 	return nil
 }
@@ -188,36 +236,31 @@ func (t *InMemoryTerm) MoveCursorLeft(n int) error {
 }
 
 func (t *InMemoryTerm) WriteLine(s string) error {
-	// record history under lock, then feed bytes to parser without holding the lock
 	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	// Rust：history.push(Str(s)); history.push(NewLine)
 	t.state.history = append(t.state.history, moveStr(s))
-	t.state.history = append(t.state.history, moveStr("\r\n"))
-	t.state.mu.Unlock()
+	t.state.history = append(t.state.history, moveNewLine())
 
-	t.state.writeStr(s)
-	t.state.writeStr("\r\n")
+	t.state.writeStrLocked(s)
+	t.state.writeStrLocked("\r\n")
 	return nil
 }
 
 func (t *InMemoryTerm) WriteStr(s string) error {
-	// record history under lock, parser will update buffer while locking as needed
 	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
 	t.state.history = append(t.state.history, moveStr(s))
-	t.state.mu.Unlock()
-
-	t.state.writeStr(s)
+	t.state.writeStrLocked(s)
 	return nil
 }
 
 func (t *InMemoryTerm) ClearLine() error {
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
+	// Rust：history.push(Clear) 然后把 "\r\x1b[2K" 喂给 parser
 	t.state.history = append(t.state.history, moveClear())
-	r := t.state.cursorRow
-	for c := 0; c < int(t.state.width); c++ {
-		t.state.buf[r][c] = ' '
-	}
-	t.state.cursorCol = 0
+	t.state.writeStrLocked("\r\x1b[2K")
 	return nil
 }
 
@@ -229,6 +272,7 @@ func (t *InMemoryTerm) Flush() error {
 }
 
 // 内部状态与辅助类型
+
 type inMemoryTermState struct {
 	mu        sync.Mutex
 	width     uint16
@@ -241,32 +285,46 @@ type inMemoryTermState struct {
 }
 
 func newInMemoryTermState(rows, cols uint16) *inMemoryTermState {
-	buf := make([][]rune, rows)
-	for i := range buf {
+	s := &inMemoryTermState{width: cols, height: rows, cursorRow: 0, cursorCol: 0, history: nil}
+	s.buf = make([][]rune, rows)
+	for i := range s.buf {
 		row := make([]rune, cols)
 		for j := range row {
 			row[j] = ' '
 		}
-		buf[i] = row
+		s.buf[i] = row
 	}
-	s := &inMemoryTermState{width: cols, height: rows, buf: buf, cursorRow: 0, cursorCol: 0, history: nil}
 	// create performer and parser
-	perf := &vtePerformer{state: s}
-	p := vte.NewParser(perf)
-	s.parser = p
+	s.parser = vte.NewParser(&vtePerformer{state: s})
 	return s
 }
 
-// writeStr 将字符串写入缓冲区，处理换行与自动换行（固定列宽）。
-func (s *inMemoryTermState) writeStr(str string) {
-	// Feed bytes into the vte parser; the performer will update the buffer
-	b := []byte(str)
-	for _, by := range b {
-		s.parser.Advance(by)
+// reset 原地重置为初始状态（Rust 是 `*state = InMemoryTermState::new(..)`，
+// 所有共享该 state 的 InMemoryTerm 都看到重置）。
+func (s *inMemoryTermState) reset(rows, cols uint16) {
+	fresh := newInMemoryTermState(rows, cols)
+	s.width = fresh.width
+	s.height = fresh.height
+	s.buf = fresh.buf
+	s.cursorRow = 0
+	s.cursorCol = 0
+	s.history = nil
+	// parser（及其 performer）必须重新挂到 s 自己身上：Rust 是整体换掉 state 本体，
+	// 换完之后 InMemoryTerm 持有的就是新 state；Go 这里换的是 s 的内容，
+	// 若沿用 fresh 的 parser，光标会更新到 fresh 上而 s.cursorRow 永远不动。
+	s.parser = vte.NewParser(&vtePerformer{state: s})
+}
+
+// writeStrLocked 将字符串喂进 vte parser（对应 Rust 的 `self.parser.write_all(..)`）。
+// 调用方必须已持有 s.mu：Rust 那边整个写操作都在 MutexGuard 下完成，
+// 不会出现两个 goroutine 的写入相互穿插。
+func (s *inMemoryTermState) writeStrLocked(str string) {
+	for _, b := range []byte(str) {
+		s.parser.Advance(b)
 	}
 }
 
-// writeRuneLocked writes a single rune to the buffer. Caller must hold s.mu.
+// writeRuneLocked 写一个字符到缓冲区，处理换行与自动换行（固定列宽）。调用方必须持有 s.mu。
 func (s *inMemoryTermState) writeRuneLocked(r rune) {
 	if r == '\n' || r == '\r' {
 		s.cursorCol = 0
@@ -288,19 +346,18 @@ func (s *inMemoryTermState) writeRuneLocked(r rune) {
 }
 
 // vte performer implementation
+//
+// 注意：vte 的回调全部在「调用方持有 s.mu」的前提下执行（Rust 里 parser 也在 MutexGuard 下），
+// 所以这里不能再加锁（Go 的 Mutex 不可重入，会死锁）。
+// 另外：Rust 的 history 只由 TermLike 的那几个方法追加，parser 从不碰 history，
+// 所以这里的 CSI 分支也不记录 history。
 type vtePerformer struct {
 	state *inMemoryTermState
 }
 
-func (p *vtePerformer) Print(r rune) {
-	p.state.mu.Lock()
-	defer p.state.mu.Unlock()
-	p.state.writeRuneLocked(r)
-}
+func (p *vtePerformer) Print(r rune) { p.state.writeRuneLocked(r) }
 
 func (p *vtePerformer) Execute(b byte) {
-	p.state.mu.Lock()
-	defer p.state.mu.Unlock()
 	switch b {
 	case '\r':
 		p.state.cursorCol = 0
@@ -326,8 +383,6 @@ func (p *vtePerformer) Hook(params [][]uint16, intermediates []byte, ignore bool
 func (p *vtePerformer) OscDispatch(params [][]byte, bellTerminated bool)                  {}
 
 func (p *vtePerformer) CsiDispatch(params [][]uint16, intermediates []byte, ignore bool, r rune) {
-	p.state.mu.Lock()
-	defer p.state.mu.Unlock()
 	get := func(def int) int {
 		if len(params) == 0 || len(params[0]) == 0 {
 			return def
@@ -337,29 +392,23 @@ func (p *vtePerformer) CsiDispatch(params [][]uint16, intermediates []byte, igno
 	switch r {
 	case 'A': // CUU
 		n := get(1)
-		p.state.history = append(p.state.history, moveUp(n))
 		if n > p.state.cursorRow {
 			p.state.cursorRow = 0
 		} else {
 			p.state.cursorRow -= n
 		}
 	case 'B': // CUD
-		n := get(1)
-		p.state.history = append(p.state.history, moveDown(n))
-		p.state.cursorRow += n
+		p.state.cursorRow += get(1)
 		if p.state.cursorRow >= int(p.state.height) {
 			p.state.cursorRow = int(p.state.height) - 1
 		}
 	case 'C': // CUF
-		n := get(1)
-		p.state.history = append(p.state.history, moveRight(n))
-		p.state.cursorCol += n
+		p.state.cursorCol += get(1)
 		if p.state.cursorCol > int(p.state.width) {
 			p.state.cursorCol = int(p.state.width)
 		}
 	case 'D': // CUB
 		n := get(1)
-		p.state.history = append(p.state.history, moveLeft(n))
 		if n > p.state.cursorCol {
 			p.state.cursorCol = 0
 		} else {
@@ -391,14 +440,11 @@ func (p *vtePerformer) CsiDispatch(params [][]uint16, intermediates []byte, igno
 		}
 		p.state.cursorRow = r
 		p.state.cursorCol = c
-	case 'K': // EL
-		// erase in line; common case is parameter 2 (whole line)
-		// We'll clear entire line for simplicity
+	case 'K': // EL：整行清除
 		rr := p.state.cursorRow
 		for i := 0; i < int(p.state.width); i++ {
 			p.state.buf[rr][i] = ' '
 		}
-		p.state.history = append(p.state.history, moveClear())
 	default:
 		// ignore other CSI for now
 		_ = r
@@ -409,9 +455,7 @@ func (p *vtePerformer) EscDispatch(intermediates []byte, ignore bool, b byte) {}
 
 func (p *vtePerformer) SosPmApcDispatch(kind vte.SosPmApcKind, data []byte, bellTerminated bool) {}
 
-// write cell-aware rune
-
-// 历史移动类型的简化实现
+// 历史移动类型（对应 Rust 的 `enum Move`）
 type move struct {
 	kind string
 	n    int

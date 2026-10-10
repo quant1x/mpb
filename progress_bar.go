@@ -90,8 +90,8 @@ func (p *ProgressBar) IsHidden() bool { return p.state.IsHidden() }
 func (p *ProgressBar) IsFinished() bool { return p.state.IsFinished() }
 
 // Finish 标记完成并保留当前消息。
+// 与 Rust 一致：不停 ticker，ticker 线程自己会在下一轮检测到 is_finished 后退出。
 func (p *ProgressBar) Finish() {
-	p.stopTicker()
 	if l := p.state.Len(); l != nil {
 		p.pos.Set(*l)
 		p.state.SetPos(*l)
@@ -101,13 +101,11 @@ func (p *ProgressBar) Finish() {
 
 // FinishWithMessage 完成并设置消息。
 func (p *ProgressBar) FinishWithMessage(msg string) {
-	p.stopTicker()
 	p.state.FinishUsingStyle(time.Now(), ProgressFinish{Kind: FinishWithMessage, Msg: msg})
 }
 
 // FinishAndClear 完成并清除输出。
 func (p *ProgressBar) FinishAndClear() {
-	p.stopTicker()
 	if l := p.state.Len(); l != nil {
 		p.pos.Set(*l)
 		p.state.SetPos(*l)
@@ -117,8 +115,12 @@ func (p *ProgressBar) FinishAndClear() {
 
 // Abandon 标记完成但保留当前进度显示。
 func (p *ProgressBar) Abandon() {
-	p.stopTicker()
 	p.state.FinishUsingStyle(time.Now(), ProgressFinish{Kind: FinishAbandon})
+}
+
+// AbandonWithMessage 标记完成但保留当前进度显示，并设置消息。
+func (p *ProgressBar) AbandonWithMessage(msg string) {
+	p.state.FinishUsingStyle(time.Now(), ProgressFinish{Kind: FinishAbandonWithMessage, Msg: msg})
 }
 
 // SetStyle 设置样式。
@@ -137,12 +139,11 @@ func (p *ProgressBar) DisableSteadyTick() {
 	p.state.disableTicker()
 }
 
-func (p *ProgressBar) stopTicker() {
-	p.state.stopTicker()
-}
-
-// tick 触发一次绘制（如果没有稳定 ticker）。
+// tick 触发一次绘制，对应 Rust 的 tick_inner：只在没有安装 steady ticker 时动手。
 func (p *ProgressBar) tick() {
+	if p.state.hasTicker() {
+		return
+	}
 	p.state.Tick(time.Now())
 }
 
@@ -152,28 +153,48 @@ func (p *ProgressBar) Message() string { return p.state.Message() }
 // Prefix 返回当前前缀。
 func (p *ProgressBar) Prefix() string { return p.state.Prefix() }
 
-// Suspend 隐藏进度条并在 f 执行后重绘。
-func (p *ProgressBar) Suspend(f func()) {
-	_ = p.state.Suspend(time.Now(), func() interface{} { f(); return nil })
+// Suspend 隐藏进度条，执行 f，再重绘，并返回 f 的结果。
+// 对应 Rust 的 `suspend<F: FnOnce() -> R, R>(f) -> R`；Go 的方法不支持类型参数，故 R 退化为 any。
+func (p *ProgressBar) Suspend(f func() interface{}) interface{} {
+	return p.state.Suspend(time.Now(), f)
 }
 
 // ForceDraw 强制重绘。
 func (p *ProgressBar) ForceDraw() { _ = p.state.Draw(true) }
 
-// WrapRead 包装 io.Reader，使读取时更新进度。
-func (p *ProgressBar) WrapRead(r io.Reader) io.Reader { return &ProgressReader{r: r, pb: p} }
+// WrapRead 包装 io.Reader，对应 Rust 的 wrap_read：返回的是带进度推进的 Read 包装器
+// （Rust 里就是同一个 ProgressBarIter<R>，走 seek_max + set_position，见 iter.go）。
+func (p *ProgressBar) WrapRead(r io.Reader) io.Reader { return NewProgressReaderIter(r, p) }
 
-// WrapWrite 包装 io.Writer，使写入时更新进度。
-func (p *ProgressBar) WrapWrite(w io.Writer) io.Writer { return &ProgressWriter{w: w, pb: p} }
+// WrapWrite 包装 io.Writer，对应 Rust 的 wrap_write（同上，见 iter.go）。
+func (p *ProgressBar) WrapWrite(w io.Writer) io.Writer { return NewProgressWriterIter(w, p) }
 
-// Update 执行闭包并触发 redraw。
-func (p *ProgressBar) Update(f func()) { f(); p.tick() }
+// Update 在内部 ProgressState 上执行 f，对应 Rust 的 `update(f: impl FnOnce(&mut ProgressState))`：
+// 闭包拿到的是可变状态；随后仅当没有安装 steady ticker 时才 tick（Rust 的 `self.ticker.lock().unwrap().is_none()`）。
+func (p *ProgressBar) Update(f func(*ProgressState)) {
+	p.state.Update(time.Now(), f, !p.state.hasTicker())
+}
 
 // UnsetLength 取消长度。
 func (p *ProgressBar) UnsetLength() { p.state.UnsetLength(time.Now()) }
 
 // SetLength 设置长度。
 func (p *ProgressBar) SetLength(l uint64) { p.state.SetLength(time.Now(), l) }
+
+// IncLength 增加长度。
+func (p *ProgressBar) IncLength(delta uint64) { p.state.IncLength(time.Now(), delta) }
+
+// DecLength 减少长度。
+func (p *ProgressBar) DecLength(delta uint64) { p.state.DecLength(time.Now(), delta) }
+
+// SetPrefix 设置前缀（对应 Rust 的 set_prefix，设置后立即更新估算并重绘）。
+func (p *ProgressBar) SetPrefix(prefix string) { p.state.SetPrefix(prefix) }
+
+// SetMessage 设置消息（对应 Rust 的 set_message，设置后立即更新估算并重绘）。
+func (p *ProgressBar) SetMessage(msg string) { p.state.SetMessage(msg) }
+
+// SetElapsed 设置已用时间（对应 Rust 的 set_elapsed：把起始时间往前推 elapsed）。
+func (p *ProgressBar) SetElapsed(elapsed time.Duration) { p.state.SetElapsed(elapsed) }
 
 // Position 返回当前位置
 func (p *ProgressBar) Position() uint64 { return p.state.Position() }
@@ -189,6 +210,12 @@ func (p *ProgressBar) PerSec() float64 { return p.state.PerSec() }
 
 // Elapsed 返回已用时间
 func (p *ProgressBar) Elapsed() time.Duration { return p.state.Elapsed() }
+
+// Duration 返回预计总时长（已用时间 + ETA）
+func (p *ProgressBar) Duration() time.Duration { return p.state.Duration() }
+
+// TabWidth 返回当前的制表符宽度
+func (p *ProgressBar) TabWidth() int { return p.state.TabWidth() }
 
 // ResetEta 重置 ETA 估算
 func (p *ProgressBar) ResetEta() { p.state.Reset(time.Now(), ResetEta) }
@@ -218,40 +245,19 @@ func (p *ProgressBar) Clone() *ProgressBar {
 	return nb
 }
 
-// 辅助包装类型：ProgressReader/Writer
-type ProgressReader struct {
-	r  io.Reader
-	pb *ProgressBar
-}
-
-func (pr *ProgressReader) Read(b []byte) (int, error) {
-	n, err := pr.r.Read(b)
-	if n > 0 {
-		pr.pb.Inc(uint64(n))
-	}
-	return n, err
-}
-
-type ProgressWriter struct {
-	w  io.Writer
-	pb *ProgressBar
-}
-
-func (pw *ProgressWriter) Write(b []byte) (int, error) {
-	n, err := pw.w.Write(b)
-	if n > 0 {
-		pw.pb.Inc(uint64(n))
-	}
-	return n, err
-}
-
 // Style 返回当前样式的拷贝。
 func (p *ProgressBar) Style() ProgressStyle { return p.state.Style() }
 
 // WithStyle 链式设置样式并返回自身。
 func (p *ProgressBar) WithStyle(style ProgressStyle) *ProgressBar { p.SetStyle(style); return p }
 
-// WithTabWidth 链式设置制表符宽度。
+// SetTabWidth 设置制表符宽度（默认 8），与 Rust 一致：设置后强制重绘一次。
+func (p *ProgressBar) SetTabWidth(w int) {
+	p.state.SetTabWidth(w)
+	_ = p.state.Draw(true)
+}
+
+// WithTabWidth 链式设置制表符宽度（与 Rust 一致，链式设置不触发重绘）。
 func (p *ProgressBar) WithTabWidth(w int) *ProgressBar { p.state.SetTabWidth(w); return p }
 
 // WithPrefix 链式设置前缀。
@@ -275,10 +281,10 @@ func (p *ProgressBar) WithElapsed(d time.Duration) *ProgressBar { p.state.SetEla
 // WithFinish 链式设置完成行为。
 func (p *ProgressBar) WithFinish(f ProgressFinish) *ProgressBar { p.state.SetOnFinish(f); return p }
 
-// NewSpinner 创建一个 spinner 风格的进度条。
+// NewSpinner 创建一个 spinner 风格的进度条（对应 Rust 的 ProgressStyle::default_spinner()）。
 func NewSpinner() *ProgressBar {
 	pb := NoLength()
-	pb.SetStyle(DefaultProgressStyleBar())
+	pb.SetStyle(DefaultProgressStyleSpinner())
 	return pb
 }
 
@@ -304,15 +310,24 @@ type TickerHandle struct {
 	once sync.Once
 }
 
+// NewTickerHandle 启动后台 ticker，语义对应 Rust 的 `Ticker::new` + `TickerControl::run`：
+// 循环体是「先判完成 → tick → 等一个 interval」，进度条一完成就自行退出，不需要调用方显式停。
+// 另一条退出路径（进度条被回收）由 SafeBarState 上的 finalizer 兜住，等价于 Rust 的 `Weak::upgrade()` 失败。
 func NewTickerHandle(interval time.Duration, pb *ProgressBar) *TickerHandle {
 	th := &TickerHandle{stop: make(chan struct{})}
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
+			if pb.state.IsFinished() {
+				return
+			}
+			// 直接 tick BarState：对应 Rust 的 TickerControl::run，不走 ProgressBar::tick_inner 的守卫
+			pb.state.Tick(time.Now())
+
+			// 等一个 interval；被通知停则提前返回（Rust 的 wait_timeout_while + timed_out 判定）
 			select {
 			case <-t.C:
-				pb.tick()
 			case <-th.stop:
 				return
 			}
@@ -394,31 +409,26 @@ func (a *AtomicPosition) Allow(now time.Time) bool {
 	newIntervals := diff / atomicInterval
 	remainder := diff % atomicInterval
 
-	// 计算新的 capacity：capacity + newIntervals - 1，且不超过 MAX
-	var newCap uint32 = capacity
-	if newIntervals > 0 {
-		// 避 overflow
-		added := uint32(newIntervals)
-		if uint64(newCap)+uint64(added) > atomicMaxBurst {
-			newCap = atomicMaxBurst
-		} else {
-			newCap = newCap + added
-		}
-	}
-	if newCap > 0 {
-		newCap = newCap - 1
-	}
+	// Rust：`capacity = min(MAX_BURST, capacity + new - 1)`
+	// 注意顺序：先加 new、再减 1、最后才钳到 MAX_BURST。
+	// Go 之前是「先钳到 MAX_BURST 再减 1」，爆量时每次少一个令牌（限流比 Rust 严）。
+	var newCap uint64 = uint64(capacity) + uint64(newIntervals) - 1
 	if newCap > atomicMaxBurst {
 		newCap = atomicMaxBurst
 	}
 
-	atomic.StoreUint32(&a.capacity, newCap)
+	atomic.StoreUint32(&a.capacity, uint32(newCap))
 	atomic.StoreUint64(&a.prev, elapsed-remainder)
 	return true
 }
 
 func (a *AtomicPosition) Reset(now time.Time) {
 	a.Set(0)
-	elapsed := uint64(now.Sub(a.start).Nanoseconds())
-	atomic.StoreUint64(&a.prev, elapsed)
+	// Rust：`now.saturating_duration_since(self.start)`（now 早于 start 时取 0），
+	// Go 直接相减会把负值转成巨大的 uint64，把 prev 写坏。
+	elapsed := now.Sub(a.start).Nanoseconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	atomic.StoreUint64(&a.prev, uint64(elapsed))
 }

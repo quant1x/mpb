@@ -4,11 +4,10 @@ import (
 	"flag"
 	"math/rand"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
-	"gitee.com/quant1x/mpb"
+	"github.com/quant1x/mpb"
 )
 
 func main() {
@@ -75,7 +74,7 @@ func main() {
 		defer wg.Done()
 		for i := 0; i < 1024; i++ {
 			time.Sleep(2 * time.Millisecond)
-			pb3.WithMessage("item #" + strconv.Itoa(i+1))
+			//pb3.WithMessage("item #" + strconv.Itoa(i+1))
 			pb3.Inc(1)
 		}
 		if err := m.Println("pb3 is done!"); err != nil {

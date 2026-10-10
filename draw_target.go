@@ -93,6 +93,9 @@ type targetKind struct {
 	termLastLineCount VisualLines
 	termRateLimiter   *RateLimiter
 	termDrawState     DrawStateStub
+	// termIsTerm 对应 Rust 的 `console::Term::is_term()`：目标是不是真终端
+	// （被重定向到文件/管道时是 false）。Rust 的 `is_hidden()` 对 Term 变体取 `!is_term()`。
+	termIsTerm bool
 
 	// TermLike variant fields
 	tlInner         TermLike
@@ -114,30 +117,76 @@ const (
 	variantTermLike
 )
 
-func (p *progressDrawTarget) IsHidden() bool { return p.kind.hidden }
+// IsHidden 对应 Rust 的 ProgressDrawTarget::is_hidden：
+//
+//	TargetKind::Hidden          => true
+//	TargetKind::Term { term, }  => !term.is_term()
+//	TargetKind::Multi { state } => state.read().unwrap().is_hidden()
+//	_                           => false
+func (p *progressDrawTarget) IsHidden() bool {
+	switch p.kind.variant {
+	case variantHidden:
+		return true
+	case variantTerm:
+		return !p.kind.termIsTerm
+	case variantMulti:
+		if p.kind.multiState != nil {
+			return p.kind.multiState.isHidden()
+		}
+		return false
+	}
+	return false
+}
 func (p *progressDrawTarget) IsStderr() bool { return p.kind.stderr }
-func (p *progressDrawTarget) Width() *uint16 { return p.kind.width }
+
+// Width 对应 Rust 的 ProgressDrawTarget::width()：Term/TermLike 每次实时问终端宽度，
+// Multi 问 MultiState，Hidden 返回 None（Go 里是 nil）。
+func (p *progressDrawTarget) Width() *uint16 {
+	switch p.kind.variant {
+	case variantTerm:
+		if p.kind.termTerm != nil {
+			w := p.kind.termTerm.Width()
+			return &w
+		}
+	case variantTermLike:
+		if p.kind.tlInner != nil {
+			w := p.kind.tlInner.Width()
+			return &w
+		}
+	}
+	return p.kind.width
+}
 
 func (p *progressDrawTarget) Remote() (*RemoteStub, int, bool) { return nil, 0, false }
 
 func (p *progressDrawTarget) Disconnect(now time.Time) {}
 
+// MarkZombie 对应 Rust 的 ProgressDrawTarget::mark_zombie：
+// 只有 Remote 变体有行为，Term/TermLike/Hidden 都是空实现。
+func (p *progressDrawTarget) MarkZombie() {}
+
+// AdjustLastLineCount 对应 Rust 的 TargetKind::adjust_last_line_count：
+//
+//	Clear(count) => last_line_count.saturating_add(count)  // 下一帧把这些行一并清掉
+//	Keep(count)  => last_line_count.saturating_sub(count)  // 让 draw target 忘掉这些行，下一帧不清
+//
+// 之前这里是反的（Clear 做减、Keep 做加），与 multi.go 里照 Rust 写的调用点（标记 zombie 用 Keep、
+// 清 zombie 用 Clear）正好南辕北辙。
 func (p *progressDrawTarget) AdjustLastLineCount(adjust LineAdjust) {
 	p.kind.mu.Lock()
 	defer p.kind.mu.Unlock()
 	switch adjust.Kind {
-	// Align with Rust semantics: Keep => add (retain zombie lines), Clear => sub (remove tracked lines)
 	case LineAdjustClear:
-		if p.kind.variant == variantTerm {
-			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingSub(adjust.Count)
-		} else if p.kind.variant == variantTermLike {
-			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingSub(adjust.Count)
-		}
-	case LineAdjustKeep:
 		if p.kind.variant == variantTerm {
 			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingAdd(adjust.Count)
 		} else if p.kind.variant == variantTermLike {
 			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingAdd(adjust.Count)
+		}
+	case LineAdjustKeep:
+		if p.kind.variant == variantTerm {
+			p.kind.termLastLineCount = p.kind.termLastLineCount.SaturatingSub(adjust.Count)
+		} else if p.kind.variant == variantTermLike {
+			p.kind.tlLastLineCount = p.kind.tlLastLineCount.SaturatingSub(adjust.Count)
 		}
 	}
 }
@@ -154,20 +203,19 @@ func (p *progressDrawTarget) DrawableWithNow(force bool, now time.Time) Drawable
 	p.kind.mu.Lock()
 	defer p.kind.mu.Unlock()
 
-	// 检查速率限制（如果 force 为 true 则跳过）
+	// 检查速率限制（如果 force 为 true 则跳过）。
+	// 对应 Rust：Term 变体的限速器必有；TermLike 变体是 Option，`map_or(true, |r| r.allow(now))`
+	// —— 没装限速器就一律放行（term_like() 造出来的目标正是这种）。
 	allowDraw := force
 	if !allowDraw {
 		switch p.kind.variant {
 		case variantTerm:
-			if p.kind.termRateLimiter != nil {
-				allowDraw = p.kind.termRateLimiter.allow(now)
-			}
+			allowDraw = p.kind.termRateLimiter == nil || p.kind.termRateLimiter.allow(now)
 		case variantTermLike:
-			if p.kind.tlRateLimiter != nil {
-				allowDraw = p.kind.tlRateLimiter.allow(now)
-			}
+			allowDraw = p.kind.tlRateLimiter == nil || p.kind.tlRateLimiter.allow(now)
 		default:
-			// 没有速率限制
+			// Multi 恒可绘制，Hidden 在下面返回 nil
+			allowDraw = true
 		}
 	}
 
@@ -178,15 +226,15 @@ func (p *progressDrawTarget) DrawableWithNow(force bool, now time.Time) Drawable
 	// Return a drawable that matches the configured variant semantics.
 	switch p.kind.variant {
 	case variantTerm:
-		return &termDrawable{state: &p.kind.termDrawState, width: p.kind.width, term: p.kind.termTerm, lastCount: &p.kind.termLastLineCount}
+		return &termDrawable{state: &p.kind.termDrawState, width: p.Width(), term: p.kind.termTerm, lastCount: &p.kind.termLastLineCount}
 	case variantTermLike:
-		return &termLikeDrawable{state: &p.kind.tlDrawState, width: p.kind.width, termLike: p.kind.tlInner, lastCount: &p.kind.tlLastLineCount}
+		return &termLikeDrawable{state: &p.kind.tlDrawState, width: p.Width(), termLike: p.kind.tlInner, lastCount: &p.kind.tlLastLineCount}
 	case variantHidden:
 		return nil
 	default:
 		// fallback to simple drawable
 		ds := &DrawStateStub{lines: make([]LineType, 0), contents: make([]string, 0)}
-		return &simpleDrawable{state: ds, width: p.kind.width, owner: p}
+		return &simpleDrawable{state: ds, width: p.Width(), owner: p}
 	}
 }
 
@@ -345,17 +393,94 @@ func (d *simpleDrawable) Clear() error {
 }
 func (d *simpleDrawable) Width() *uint16 { return d.width }
 
-// 构造函数
-func NewStderrDrawTarget() ProgressDrawTarget {
-	w := uint16(80)
-	return &progressDrawTarget{kind: targetKind{variant: variantTermLike, hidden: false, stderr: true, width: &w, tlInner: NewStdTerm(), tlRateLimiter: newRateLimiter(20)}}
+// 以下构造函数一一对应 Rust 的 `impl ProgressDrawTarget` 关联函数。
+
+// newTermDrawTarget 对应 `term(term, refresh_rate)`：Term 变体，带速率限制。
+// stderr 标记对应 Rust 里 `term.target() == TermTarget::Stderr` 的判定（is_stderr()）。
+func newTermDrawTarget(term TermLike, refreshRate uint8, stderr bool) ProgressDrawTarget {
+	var w uint16
+	if term != nil {
+		w = term.Width()
+	}
+	// Rust 的 `TargetKind::Term { term, .. } => !term.is_term()`：
+	// 只有真终端才算可见；被重定向到文件/管道时整条进度条隐藏（"piping to logfiles" 的行为）。
+	isTerm := false
+	if term != nil {
+		if it, ok := term.(interface{ IsTerm() bool }); ok {
+			isTerm = it.IsTerm()
+		}
+	}
+	return &progressDrawTarget{kind: targetKind{
+		variant:         variantTerm,
+		hidden:          false,
+		stderr:          stderr,
+		width:           &w,
+		termTerm:        term,
+		termIsTerm:      isTerm,
+		termRateLimiter: newRateLimiter(refreshRate),
+	}}
 }
+
+// newTermLikeDrawTarget 对应 `term_like(term_like)`：TermLike 变体。
+// rate 为 nil 表示不装速率限制（Rust 的 `rate_limiter: None`）。
+func newTermLikeDrawTarget(termLike TermLike, rate *uint8) ProgressDrawTarget {
+	var w uint16
+	if termLike != nil {
+		w = termLike.Width()
+	}
+	// targetKind 里含 sync.Mutex，不能先造值再拷进结构体（go vet 会报 copies lock value）
+	dt := &progressDrawTarget{}
+	dt.kind.variant = variantTermLike
+	dt.kind.hidden = false
+	dt.kind.stderr = false
+	dt.kind.width = &w
+	dt.kind.tlInner = termLike
+	if rate != nil {
+		dt.kind.tlRateLimiter = newRateLimiter(*rate)
+	}
+	return dt
+}
+
+// NewTermDrawTarget 对应 Rust 的 `term(term, refresh_rate)`。
+func NewTermDrawTarget(term TermLike, refreshRate uint8) ProgressDrawTarget {
+	return newTermDrawTarget(term, refreshRate, false)
+}
+
+// NewStdoutDrawTarget 对应 Rust 的 `stdout()`：buffered stdout，每秒最多 20 次。
+func NewStdoutDrawTarget() ProgressDrawTarget { return NewStdoutDrawTargetWithHz(20) }
+
+// NewStderrDrawTarget 对应 Rust 的 `stderr()`：buffered stderr，每秒最多 20 次。
+// 这是进度条的默认绘制目标（New / NoLength / NewSpinner 都用它）。
+func NewStderrDrawTarget() ProgressDrawTarget { return NewStderrDrawTargetWithHz(20) }
+
+// NewStdoutDrawTargetWithHz 对应 Rust 的 `stdout_with_hz(refresh_rate)`。
+func NewStdoutDrawTargetWithHz(refreshRate uint8) ProgressDrawTarget {
+	return newTermDrawTarget(NewStdTerm(), refreshRate, false)
+}
+
+// NewStderrDrawTargetWithHz 对应 Rust 的 `stderr_with_hz(refresh_rate)`。
+func NewStderrDrawTargetWithHz(refreshRate uint8) ProgressDrawTarget {
+	return newTermDrawTarget(NewStderrTerm(), refreshRate, true)
+}
+
+// NewTermLikeDrawTarget 对应 Rust 的 `term_like(term_like)`：
+// 注意它没有默认刷新率（不限速），需要限速请用 NewTermLikeDrawTargetWithHz。
+func NewTermLikeDrawTarget(termLike TermLike) ProgressDrawTarget {
+	return newTermLikeDrawTarget(termLike, nil)
+}
+
+// NewTermLikeDrawTargetWithHz 对应 Rust 的 `term_like_with_hz(term_like, refresh_rate)`。
+func NewTermLikeDrawTargetWithHz(termLike TermLike, refreshRate uint8) ProgressDrawTarget {
+	return newTermLikeDrawTarget(termLike, &refreshRate)
+}
+
+// NewHiddenDrawTarget 对应 Rust 的 `hidden()`：完全不渲染。
 func NewHiddenDrawTarget() ProgressDrawTarget {
 	return &progressDrawTarget{kind: targetKind{variant: variantHidden, hidden: true, stderr: false, width: nil}}
 }
 
 // NewInMemoryDrawTarget 创建一个使用 InMemoryTerm 的 draw target（用于测试）。
+// 对应 Rust 里 `ProgressDrawTarget::term_like(Box::new(InMemoryTerm::new(..)))` 的用法：不限速。
 func NewInMemoryDrawTarget(t *InMemoryTerm) ProgressDrawTarget {
-	w := t.Width()
-	return &progressDrawTarget{kind: targetKind{variant: variantTermLike, hidden: false, stderr: false, width: &w, tlInner: t, tlRateLimiter: newRateLimiter(20)}}
+	return NewTermLikeDrawTarget(t)
 }
