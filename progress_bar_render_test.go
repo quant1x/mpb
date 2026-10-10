@@ -131,6 +131,36 @@ func TestMeasureTextWidthMatchesUpstream(t *testing.T) {
 	}
 }
 
+// TestAnsiSegmentsMatchesUpstreamDFA 对齐上游 console::ansi 的手写 DFA：
+// 起始符含 U+009B、结束符是固定集合而不是任意字母、OSC 不计为 ANSI。
+func TestAnsiSegmentsMatchesUpstreamDFA(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []ansiSegment
+	}{
+		{"SGR 前后", "\x1b[31m█\x1b[0m", []ansiSegment{{"\x1b[31m", true}, {"█", false}, {"\x1b[0m", true}}},
+		{"文本在前", "ab\x1b[0m", []ansiSegment{{"ab", false}, {"\x1b[0m", true}}},
+		{"真彩色 SGR", "\x1b[38;2;255;0;0m", []ansiSegment{{"\x1b[38;2;255;0;0m", true}}},
+		{"字符集指定", "\x1b(B", []ansiSegment{{"\x1b(B", true}}},
+		{"单字节 CSI 起始符", "\u009b31m", []ansiSegment{{"\u009b31m", true}}},
+		{"OSC 上游不认", "\x1b]8;;url\x07x", []ansiSegment{{"\x1b]8;;url\x07x", false}}},
+		{"结束符不在集合内", "\x1bX", []ansiSegment{{"\x1bX", false}}},
+		{"纯文本", "abc", []ansiSegment{{"abc", false}}},
+	}
+	for _, c := range cases {
+		got := ansiSegments(c.in)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s：段数 = %d，应为 %d（%#v）", c.name, len(got), len(c.want), got)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s：第 %d 段 = %#v，应为 %#v", c.name, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
 // TestWideBarGivesWayForWideMessage 看**效果**：消息里的全角字符按 2 列让位（与 Rust 一致），
 // 而不是被 NFKC 归一成 1 列后少让一位。
 func TestWideBarGivesWayForWideMessage(t *testing.T) {

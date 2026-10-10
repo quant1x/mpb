@@ -485,40 +485,169 @@ type ansiSegment struct {
 	isAnsi bool
 }
 
+// ansiState 对应 Rust console::ansi::State（ansi.rs）：一个手写的 DFA，
+// 与下面这条正则等价（上游保留了这条正则用于对比测试）：
+//
+//	[\x1b\x9b]([()][012AB]|[\\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-nqry=><])
+//
+// 注意两点与"想当然"的 ANSI 识别不同：
+//   - 起始符除 ESC(0x1b) 外还有 U+009B（单字节 CSI 的 Unicode 表示）；
+//   - 结束符**不是**任意字母，而是 `[0-9A-PRZcf-nqry=><]`（没有 Q、S~Y、a、b、d、e、
+//     o、p、s~x、z），且 `]`（OSC）压根不在前缀类里 —— 所以 `\x1b]8;;url\x07`
+//     在上游眼里是**可见文本**，不是 ANSI 序列。
+type ansiState int
+
+const (
+	ansiStart ansiState = iota
+	ansiS1
+	ansiS2
+	ansiS3
+	ansiS4
+	ansiS5
+	ansiS6
+	ansiS7
+	ansiS8
+	ansiS9
+	ansiS10
+	ansiS11
+	ansiTrap
+)
+
+// isFinal 对应 Rust 的 `State::is_final()`：S3 | S5 | S6 | S7 | S8 | S9 | S11。
+func (s ansiState) isFinal() bool {
+	switch s {
+	case ansiS3, ansiS5, ansiS6, ansiS7, ansiS8, ansiS9, ansiS11:
+		return true
+	}
+	return false
+}
+
+// transition 对应 Rust 的 `State::transition(c)`：表外的一律进 Trap。
+func transition(s ansiState, c rune) ansiState {
+	switch {
+	case c == 0x1b || c == 0x9b:
+		if s == ansiStart {
+			return ansiS1
+		}
+	case c == '(' || c == ')':
+		switch s {
+		case ansiS1:
+			return ansiS2
+		case ansiS2, ansiS4:
+			return ansiS4
+		}
+	case c == ';':
+		switch s {
+		case ansiS1, ansiS2, ansiS4:
+			return ansiS4
+		case ansiS5, ansiS6, ansiS7, ansiS8, ansiS10:
+			return ansiS10
+		}
+	case c == '[' || c == '#' || c == '?':
+		switch s {
+		case ansiS1, ansiS2, ansiS4:
+			return ansiS4
+		}
+	case c >= '0' && c <= '2':
+		switch s {
+		case ansiS1, ansiS4:
+			return ansiS5
+		case ansiS2:
+			return ansiS3
+		case ansiS5:
+			return ansiS6
+		case ansiS6:
+			return ansiS7
+		case ansiS7:
+			return ansiS8
+		case ansiS8:
+			return ansiS9
+		case ansiS10:
+			return ansiS5
+		}
+	case c >= '3' && c <= '9':
+		switch s {
+		case ansiS1, ansiS4:
+			return ansiS5
+		case ansiS2:
+			return ansiS5
+		case ansiS5:
+			return ansiS6
+		case ansiS6:
+			return ansiS7
+		case ansiS7:
+			return ansiS8
+		case ansiS8:
+			return ansiS9
+		case ansiS10:
+			return ansiS5
+		}
+	case (c >= 'A' && c <= 'P') || c == 'R' || c == 'Z' || c == 'c' ||
+		(c >= 'f' && c <= 'n') || c == 'q' || c == 'r' || c == 'y' ||
+		c == '=' || c == '>' || c == '<':
+		switch s {
+		case ansiS1, ansiS2, ansiS4, ansiS5, ansiS6, ansiS7, ansiS8, ansiS10:
+			return ansiS11
+		}
+	}
+	return ansiTrap
+}
+
+// matchAnsiCodeAt 对应 Rust `find_ansi_code_exclusive` 里那段 DFA 循环：
+// 从 s[i]（必须是 0x1b 或 U+009B）起**贪心**推进到 Trap 或串尾，取**最后一个**
+// 曾经 final 的位置作为序列结尾 —— 上游原话：
+//
+//	The match is greedy so run till we hit the trap state no matter what.
+//	A valid match is just one that was final at some point
+//
+// 返回序列的结束下标（不含）。
+func matchAnsiCodeAt(s string, i int) (int, bool) {
+	state := ansiStart
+	maybeEnd := -1
+	for j := i; j < len(s); {
+		r, size := utf8.DecodeRuneInString(s[j:])
+		state = transition(state, r)
+		if state.isFinal() {
+			maybeEnd = j
+		}
+		if state == ansiTrap {
+			break
+		}
+		j += size
+	}
+	if maybeEnd < 0 {
+		return 0, false
+	}
+	// 上游：所有可能的 final 字符都是单字节，所以 end + 1 即可作为 exclusive end
+	return maybeEnd + 1, true
+}
+
 // ansiSegments 对应 Rust 的 `AnsiCodeIterator`：把字符串切成 ANSI 段与可见段。
 //
-// 逐**字节**扫描即可（ESC 与 CSI 结束符都是 ASCII），但拼接必须按字节累积：
+// 逐 **rune** 扫描（起始符含 U+009B，必须按 rune 看），但切片按**字节下标**累积：
 // 之前写的是 `run += string(c)`，把字节当 rune 转，多字节 UTF-8 直接被拆坏
 // （"国" 的三个字节 E5 9B BD 变成 å / U+009B / ½），换行度量与截断就都错了。
 func ansiSegments(s string) []ansiSegment {
 	segments := make([]ansiSegment, 0)
-	run := make([]byte, 0, len(s))
-	flush := func(isAnsi bool) {
-		if len(run) == 0 {
-			return
-		}
-		segments = append(segments, ansiSegment{string(run), isAnsi})
-		run = run[:0]
-	}
-	inAnsi := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !inAnsi {
-			if c == '\x1b' {
-				flush(false)
-				inAnsi = true
+	start := 0 // 当前未落地的可见段起点
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == 0x1b || r == 0x9b {
+			if end, ok := matchAnsiCodeAt(s, i); ok {
+				if i > start {
+					segments = append(segments, ansiSegment{s[start:i], false})
+				}
+				segments = append(segments, ansiSegment{s[i:end], true})
+				start = end
+				i = end
+				continue
 			}
 		}
-		run = append(run, c)
-		if inAnsi {
-			// end of CSI: letter in A-Za-z
-			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-				flush(true)
-				inAnsi = false
-			}
-		}
+		i += size
 	}
-	flush(inAnsi)
+	if start < len(s) {
+		segments = append(segments, ansiSegment{s[start:], false})
+	}
 	return segments
 }
 
