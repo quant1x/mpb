@@ -3,6 +3,107 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+### Changed
+- fix[go]：Drawable::state() 每帧先 reset，修进度条逐帧往下换行
+  对应 Rust draw_target.rs：
+
+      let mut state = match self { Drawable::Term { draw_state, .. } => ... };
+      state.reset();
+      state
+
+  Term / TermLike 两个变体的 draw_state 挂在 TargetKind 上，是跨帧持久的。
+  不 reset 时 format_state 每帧往同一份 lines 里 append，行数一帧帧涨
+  （第 1 帧 1 行、第 2 帧 2 行……），进度条就一路往下换行，real_height
+  跟着涨又让 MoveCursorUp 越移越多。
+- fix[go]：终端宽度每帧现问，跟随窗口缩放
+  对应 Rust console::Term::size_checked() -> terminal_size(self)：
+
+      pub fn size(&self) -> (u16, u16) { self.size_checked().unwrap_or((24, DEFAULT_WIDTH)) }
+
+  之前 StdTerm 在构造时 GetSize 量一次存进 width/height，Width() 直接返回常量，
+  窗口缩放、以及「启动时控制台还是默认尺寸、随后被宿主改成实际尺寸」（ConPTY
+  与 IDE 终端面板的典型开局）都感知不到：宽度偏大则整行溢出折行，偏小则只画一截。
+
+  新增 sizeChecked()：每次现问，失败才回落到构造时的值。width/height 现在只是
+  回落值，不再是当前宽度。
+- fix[go]：宽度口径不再沿用 go-runewidth 全局，修 {wide_bar} 只画一半
+  formatBar 里 clusters = width / char_width 这行与上游逐字等价，但上游那个
+  char_width 背后是显式默认、我们背后是隐式探测，语义不同：
+
+  - 上游 Width::new() 是 is_cjk: AtomicBool::new(false)，UnicodeWidthChar::width
+    把 █(U+2588)、░(U+2591) 这类 East Asian Ambiguous 按 1 列算（其单测断言
+    默认 WIDTH.char('█') == 1），与进程所在代码页无关；
+  - go-runewidth 会在 init() 里按控制台代码页（CP936/932/949/950）把全局
+    DefaultCondition 切成 CJK 口径，█ 变成 2 列。
+
+  于是 165 列的终端里 char_width=2，条只画 155/2≈77 个块字符（视觉上一半宽度），
+  而 drawToTerm 的补白按同一份偏大口径算，光标被顶到整行最右侧。
+
+  改为本包自持两套 Condition（narrow / CJK），默认 narrow 不看环境；
+  SetDefaultCJK 只切本包开关，不再改 go-runewidth 的全局状态。
+  measureTextWidth 用同一口径。附回归测试：模拟 CJK 进程环境，断言 165 列下条
+  必须是 155 个块字符（旧实现下该用例会红）。
+- fix[go]：measureTextWidth 与上游语义对齐（不做 NFKC、不展开制表符、不删 ZWJ）
+  上游 console::measure_text_width 与 indicatif Width::ansi_str 的定义是
+  「跳过 ANSI 段（AnsiCodeIterator），其余各段按 unicode-width 累加」，仅此而已
+  （style.rs 用它算 {wide_bar} 该让出多少列、以及行末补白几格）。
+
+  之前的移植额外做了三件上游没有的事：
+
+  1. NFKC 归一化：把全角/兼容字符改宽窄（１(U+FF11) 2 列 -> 1 列、ﬁ -> fi），
+     于是含全角文本时 {wide_bar} 的让位与补白都比 Rust 少；
+  2. 制表符按 4 空格展开：上游由 TabExpandedString 在展开期按 tab_width(=8)
+     换空格，走到宽度函数的原始 \t 是控制字符，宽 0；
+  3. 删除 ZWJ/ZWNJ：上游交给 unicode-width 的字形簇逻辑，自己删会把组合
+     emoji 拆成若干个 2 列，反而偏大。
+
+  改为直接复用 ansiSegments（本包的 AnsiCodeIterator 等价物）逐段累加。
+  测试期望值取上游 style.rs 单测的断言（ansi_str 带 ANSI 的 █ == 1、str(あ) == 2），
+  并补一条效果用例：40 列终端里全角消息按 2 列让位，条为 37 个块字符。
+- fix[go]：ansiSegments 照搬上游手写 DFA，不再用任意字母判 ANSI 结束
+  上游 console::ansi 用一条手写 DFA（与 strip_ansi_re 等价）识别 ANSI 序列：
+
+      [\\x1b\\x9b]([()][012AB]|[\\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-nqry=><])
+
+  之前的移植是「遇到 ESC 起，碰到任意字母 A-Za-z 结束」，两处与上游不同：
+  1. 结束符是固定集合 [0-9A-PRZcf-nqry=><]（无 Q、S~Y、a、b、d、e、o、p、s~x、z），
+     不是任意字母；
+  2. 起始符除 ESC 外还有 U+009B；且 ] 不在前缀类里，所以 OSC（\\x1b]8;;url\\x07）
+     在上游眼里是可见文本，不是 ANSI 序列。
+
+  此外上游的匹配是贪心的：推进到 Trap 或串尾，取最后一个曾为 final 的位置作结尾。
+
+  照搬完整状态机（Start/S1..S11/Trap 与 transition 表），扫描按 rune（起始符含
+  U+009B）而切片按字节下标。测试覆盖 SGR、真彩色 SGR、字符集指定、U+009B 起始、
+  OSC 不识别、结束符不在集合内等分支。
+- docs：README 列出 16 个示例及其效果动画
+  用 VHS 逐个录制 examples 下的 16 个示例，tape 与 GIF 同名放在 screenshots/：
+
+  - tape 沿用原有 cargo.tape 的风格：1200x600、FontSize 20，跑
+    go run github.com/quant1x/mpb/examples/示例名；Sleep 按各示例的实际步数×间隔定
+    （single 8s、download 系列 16s、multi-tree 系列 25s 等），可能跑不完的
+    （cargo、multi-tree、multi-tree-ext）末尾补 Ctrl+C。
+  - cargowrap 特殊：它跑 cargo build --release，必须在 Rust 工程里，而 go run 会把
+    cwd 锁在 Go 模块内 —— 先编成 exe，再到临时目录现建一个带 serde 依赖的空 crate
+    （--offline，本地 registry 已缓存）来跑，这样编译有 6 秒、spinner 的帧才看得清；
+    否则空 crate 1 秒编完，帧一闪而过。
+  - README 新增「示例与效果」一节：每个示例一段（说明取自各示例 main.go 的头注释 +
+    运行命令 + GIF），并给出重录命令（vhs 一次只吃一个 tape，所以要循环）。
+
+  自检：README 引用的 GIF、实际 GIF、examples 目录三者都是 16，一一对应、无缺失无多余。
+- feat：16 个示例程序纳入版本管理
+  与上游 examples/ 一一对应：cargo / cargowrap / download / download-continued /
+  download-speed / fastbar / finebars / iterator / log / long-spinner / morebars /
+  multi-tree / multi-tree-ext / single / tokio / yarnish。每个 main.go 的头注释都
+  写明它对应上游哪个 .rs，以及演示点。
+
+  此前这些目录一直未跟踪，而 README 的「示例与效果」一节与 screenshots/ 里的录屏
+  都按 go run ./examples/示例名 引用它们 —— 对新克隆不成立，故补齐。
+
+  本次只含 16 个 main.go，无构建产物。
+- release version 0.1.2
+
 ## [0.1.1] - 2026-10-10
 ### Changed
 - docs：来源说明改用变量写法描述本地路径
@@ -84,7 +185,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.1...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.2...HEAD
+[0.1.2]: https://gitee.com/quant1x/mpb/compare/v0.1.1...v0.1.2
 [0.1.1]: https://gitee.com/quant1x/mpb/compare/v0.1.0...v0.1.1
 [0.1.0]: https://gitee.com/quant1x/mpb/compare/v0.0.1...v0.1.0
 
