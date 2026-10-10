@@ -250,7 +250,22 @@ type termDrawable struct {
 	lastCount *VisualLines
 }
 
-func (t *termDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
+// State 对应 Rust 的 `Drawable::state()`：**必须先 reset**。
+//
+//	let mut state = match self { Drawable::Term { draw_state, .. } => ... };
+//	state.reset();   // <- draw_target.rs
+//	state
+//
+// Term 变体的 draw_state 是**跨帧持久**的（挂在 TargetKind::Term 上），不 reset 的话
+// 每帧 format_state 都往同一份 lines 里 append，行数一帧帧涨：
+// 第 1 帧 1 行、第 2 帧 2 行…… 进度条就会一直往下换行（real_height 也跟着涨，
+// 于是 MoveCursorUp 越移越多，画面彻底乱掉）。
+func (t *termDrawable) State() *DrawStateWrapper {
+	t.state.lines = t.state.lines[:0]
+	t.state.contents = t.state.contents[:0]
+	return DrawStateWrapperForTerm(t.state)
+}
+
 func (t *termDrawable) Draw() error {
 	// delegate to DrawStateStub.drawToTerm; update lastCount with returned value
 	newCount, err := t.state.drawToTerm(t.term, *t.lastCount)
@@ -282,7 +297,13 @@ type termLikeDrawable struct {
 	lastCount *VisualLines
 }
 
-func (t *termLikeDrawable) State() *DrawStateWrapper { return DrawStateWrapperForTerm(t.state) }
+// State 同 termDrawable.State()：TermLike 变体的 draw_state 也是跨帧持久的，
+// 每帧都要先 reset（见 Rust 的 `Drawable::state()`）。
+func (t *termLikeDrawable) State() *DrawStateWrapper {
+	t.state.lines = t.state.lines[:0]
+	t.state.contents = t.state.contents[:0]
+	return DrawStateWrapperForTerm(t.state)
+}
 func (t *termLikeDrawable) Draw() error {
 	newCount, err := t.state.drawToTerm(t.termLike, *t.lastCount)
 	if err != nil {
