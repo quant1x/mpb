@@ -27,8 +27,5 @@
 *.out
 *.app
 
-# Rust build files
-/target/
-
 #VS Code
 .vscode/
