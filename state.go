@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/text/unicode/norm"
 )
 
 // 注意：此文件按 src/state.rs 逻辑翻译，尽量一行一行对应。
@@ -684,42 +682,33 @@ func wrappedMetrics(s string, width int) wrapMetrics {
 	return wrapMetrics{height: VisualLines(numLines), lastLineWidth: column}
 }
 
-// measureTextWidth approximates console::measure_text_width by stripping ANSI CSI sequences and returning rune count.
+// measureTextWidth 对应 Rust 的 `console::measure_text_width`，也就是 indicatif
+// `Width::ansi_str`（style.rs 用它算 `{wide_bar}` 该让出多少列、以及行末补白几格）：
+//
+//	AnsiCodeIterator::new(s)
+//	    .filter_map(|(s, is_ansi)| (!is_ansi).then(|| str_width(s)))
+//	    .sum()
+//
+// 即**只跳过 ANSI 段**，其余各段按 unicode-width 逐字累加。上游这里不做三件事：
+//
+//  1. 不做 Unicode 归一化 —— NFKC 会把全角/兼容字符改宽窄（`１`(U+FF11) 2 列 → `1`
+//     1 列、`ﬁ` → `fi`），Rust 侧从来不归一化，照它算出来的列宽才对得上；
+//  2. 不展开制表符 —— 制表符由 TabExpandedString 在**展开期**按 tab_width（默认 8）
+//     换成空格（state.rs:387），走到这里的原始 '\t' 是控制字符，宽 0；
+//  3. 不动 ZWJ/ZWNJ —— 字形簇该怎么算交给 unicode-width，自己删会把组合 emoji
+//     拆成若干个 2 列，反而偏大。
 func measureTextWidth(s string) int {
 	if s == "" {
 		return 0
 	}
-	// Normalize and remove certain invisible characters to better match Rust's console behavior
-	s = norm.NFKC.String(s)
-	s = strings.ReplaceAll(s, "\x00", "")
-	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	// expand tabs to spaces (conservative)
-	s = strings.ReplaceAll(s, "\t", "    ")
-	// remove zero-width joiner/non-joiner which may affect widths in console crate
-	s = strings.ReplaceAll(s, "\u200d", "")
-	s = strings.ReplaceAll(s, "\u200c", "")
-	// strip ANSI CSI sequences
-	rs := []rune(s)
-	out := make([]rune, 0, len(rs))
-	for i := 0; i < len(rs); i++ {
-		if rs[i] == '\x1b' {
-			// skip CSI sequence
-			i++
-			if i < len(rs) && rs[i] == '[' {
-				i++
-				for i < len(rs) {
-					if (rs[i] >= 'A' && rs[i] <= 'Z') || (rs[i] >= 'a' && rs[i] <= 'z') {
-						break
-					}
-					i++
-				}
-			}
+	total := 0
+	for _, seg := range ansiSegments(s) {
+		if seg.isAnsi {
 			continue
 		}
-		out = append(out, rs[i])
+		total += widthCondition().StringWidth(seg.text)
 	}
-	return widthCondition().StringWidth(string(out))
+	return total
 }
 
 // DrawStateStub.drawToTerm implements Rust's DrawState::draw_to_term semantics

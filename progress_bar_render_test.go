@@ -101,3 +101,58 @@ func TestWideBarFillsTerminalWidthInCJKProcessEnv(t *testing.T) {
 		t.Fatalf("渲染结果缺少计数器，行=%q", line)
 	}
 }
+
+// TestMeasureTextWidthMatchesUpstream 逐条对齐上游单测（style.rs:1358-1387）与
+// `console::measure_text_width` 的语义：只跳 ANSI 段，其余按 unicode-width 累加。
+// 期望值取上游自己的断言，不取"我们跑出来的数"。
+func TestMeasureTextWidthMatchesUpstream(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"带 ANSI", "\x1b[31m█\x1b[0m", 1}, // 上游：WIDTH.ansi_str("\u{1b}[31m█\u{1b}[0m") == 1
+		{"真宽字符", "あ", 2},                  // 上游：WIDTH.str("あ") == 2
+		{"歧义字符默认 1 列", "█", 1},            // 上游：WIDTH.str("█") == 1
+		{"全角数字不归一化", "１", 2},              // U+FF11 是 2 列；NFKC 归一化会把它缩成 1
+		{"制表符是控制字符", "\t", 0},             // 展开期按 tab_width=8 换空格，原始 '\t' 宽 0
+		{"回车换行为 0 列", "a\r\nb", 2},
+		{"NUL 为 0 列", "a\x00b", 2},
+	}
+	for _, c := range cases {
+		if got := measureTextWidth(c.in); got != c.want {
+			t.Errorf("%s：measureTextWidth(%q) = %d，上游应为 %d", c.name, c.in, got, c.want)
+		}
+	}
+
+	// ZWJ 不特殊处理：与 Width.str 同口径（上游交给 unicode-width 的字形簇逻辑）
+	if got, want := measureTextWidth("👨\u200d👩"), DefaultWidth.str("👨\u200d👩"); got != want {
+		t.Errorf("ZWJ 不应被特殊处理：measureTextWidth = %d，Width.str = %d", got, want)
+	}
+}
+
+// TestWideBarGivesWayForWideMessage 看**效果**：消息里的全角字符按 2 列让位（与 Rust 一致），
+// 而不是被 NFKC 归一成 1 列后少让一位。
+func TestWideBarGivesWayForWideMessage(t *testing.T) {
+	const termWidth = 40
+	term := NewInMemoryTerm(24, termWidth)
+	pb := NewWithDrawTarget(nil, NewInMemoryDrawTarget(term))
+	defer pb.Abandon()
+
+	sty, err := ProgressStyleWithTemplate("{wide_bar} {msg}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb.SetLength(1024)
+	pb.SetStyle(sty)
+	pb.SetMessage("１") // 全角数字：2 列（不是 1）
+	pb.SetPosition(512)
+	pb.ForceDraw()
+
+	line := term.Contents()
+	bar := strings.Count(line, "█") + strings.Count(line, "░")
+	// 40 列 -（空格 1 列 + 全角消息 2 列）= 37
+	if bar != termWidth-3 {
+		t.Fatalf("全角消息应占 2 列，条应为 %d 个块字符，实际 %d，行=%q", termWidth-3, bar, line)
+	}
+}
