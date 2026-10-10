@@ -27,7 +27,10 @@ type TermLike interface {
 
 // StdTerm 是一个简单的终端实现，向指定的 io.Writer 写入，并通过 ANSI 控制序列移动光标。
 type StdTerm struct {
-	w      io.Writer
+	w    io.Writer
+	file *os.File // 构造时探测到的 *os.File；非 nil 时 Width/Height 每次都重新查询尺寸
+	// width/height 只是**取不到尺寸时**的回落值（Rust 是 (24, DEFAULT_WIDTH)），
+	// 不是"当前宽度"—— 终端窗口随时可缩放，尺寸必须每次现问。
 	width  uint16
 	height uint16
 	// isTerm 对应 Rust 的 `console::Term::is_term()`：构造时探测到真实终端尺寸即为真终端。
@@ -38,10 +41,10 @@ type StdTerm struct {
 // NewStdTerm 使用 stdout 创建默认终端（宽度 80，高度 20，可在需要时扩展）。
 func NewStdTerm() *StdTerm {
 	w := os.Stdout
-	if width, height, err := termpkg.GetSize(int(os.Stdout.Fd())); err == nil {
-		return &StdTerm{w: w, width: uint16(width), height: uint16(height), isTerm: true}
+	if width, height, err := termpkg.GetSize(int(w.Fd())); err == nil {
+		return &StdTerm{w: w, file: w, width: uint16(width), height: uint16(height), isTerm: true}
 	}
-	return &StdTerm{w: os.Stdout, width: 80, height: 20}
+	return &StdTerm{w: os.Stdout, file: os.Stdout, width: 80, height: 20}
 }
 
 // NewStderrTerm 使用 stderr 创建终端，对应 Rust 的 `Term::buffered_stderr()`。
@@ -53,8 +56,9 @@ func NewStdTermWithWriter(w io.Writer) *StdTerm {
 	// Try to derive terminal size if writer is an *os.File
 	if f, ok := w.(*os.File); ok {
 		if width, height, err := termpkg.GetSize(int(f.Fd())); err == nil {
-			return &StdTerm{w: w, width: uint16(width), height: uint16(height), isTerm: true}
+			return &StdTerm{w: w, file: f, width: uint16(width), height: uint16(height), isTerm: true}
 		}
+		return &StdTerm{w: w, file: f, width: 80, height: 20}
 	}
 	return &StdTerm{w: w, width: 80, height: 20}
 }
@@ -62,8 +66,39 @@ func NewStdTermWithWriter(w io.Writer) *StdTerm {
 // IsTerm 对应 Rust 的 `console::Term::is_term()`：是不是真实终端（而非文件/管道）。
 func (t *StdTerm) IsTerm() bool { return t.isTerm }
 
-func (t *StdTerm) Width() uint16  { return t.width }
-func (t *StdTerm) Height() uint16 { return t.height }
+// sizeChecked 对应 Rust 的 `console::Term::size_checked()` → `terminal_size(self)`：
+// **每次现问**，不缓存。取不到（不是文件/已被重定向/查询失败）时返回 false。
+func (t *StdTerm) sizeChecked() (uint16, uint16, bool) {
+	if t.file == nil {
+		return 0, 0, false
+	}
+	width, height, err := termpkg.GetSize(int(t.file.Fd()))
+	if err != nil || width <= 0 || height <= 0 || width > 0xFFFF || height > 0xFFFF {
+		return 0, 0, false
+	}
+	return uint16(width), uint16(height), true
+}
+
+// Width 对应 Rust 的 `console::Term::width()`：
+//
+//	let (_, w) = term.size(); // size() = size_checked().unwrap_or((24, DEFAULT_WIDTH))
+//
+// 终端窗口是可缩放的，进度条每帧都要按**当前**宽度重排；构造时量一次就存死的话，
+// 缩放之后要么超宽折行、要么只画一截补不满整行。
+func (t *StdTerm) Width() uint16 {
+	if w, _, ok := t.sizeChecked(); ok {
+		return w
+	}
+	return t.width
+}
+
+// Height 同 Width：每次现问（Rust 的 `Term::height()` → `size().0`）。
+func (t *StdTerm) Height() uint16 {
+	if _, h, ok := t.sizeChecked(); ok {
+		return h
+	}
+	return t.height
+}
 
 func (t *StdTerm) writeEscape(format string, a ...interface{}) error {
 	if t.w == nil {
