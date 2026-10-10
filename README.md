@@ -43,6 +43,191 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 （左侧是上游文件名，本仓库只有右列的 Go 文件；上游源码见上面的本地副本路径。）
 
+## 示例与效果
+
+16 个示例与上游 `examples/` 一一对应，动画用 [VHS](https://github.com/charmbracelet/vhs) 录制，
+tape 文件与 GIF 同名，都在 `screenshots/`：
+
+```powershell
+# 逐条重录（必须从仓库根目录跑：tape 里的 Output 路径相对 cwd 解析）
+Get-ChildItem screenshots -Filter '*.tape' | ForEach-Object { vhs $_.FullName -q }
+```
+
+### `cargo`
+
+模拟 cargo 编译时的输出（**并不真的调用 cargo**）：4 个 worker 并发从 crate 列表取任务，
+主线程负责画进度条并打 `Compiling` 行。
+
+```powershell
+go run ./examples/cargo
+```
+
+![cargo](screenshots/cargo.gif)
+
+### `cargowrap`
+
+把 `cargo build --release` 的 stderr **逐行喂给一个 spinner**（对应上游 `cargowrap.rs`）。
+本机需装 cargo，且要在 Rust 工程目录里跑 —— 录屏里先编成 exe，再到 `%TEMP%` 现建一个带依赖的
+空 crate 来跑（见 `screenshots/cargowrap.tape`）。
+
+```powershell
+go run ./examples/cargowrap
+```
+
+![cargowrap](screenshots/cargowrap.gif)
+
+### `download`
+
+模拟下载进度，演示 `{bytes}/{total_bytes}` 与自定义 eta key（Rust 的 `with_key`）。
+
+```powershell
+go run ./examples/download
+```
+
+![download](screenshots/download.gif)
+
+### `download-continued`
+
+断点续传：起始位置不为 0，并调用 `ResetEta()` 让 ETA 从当前位置重新估算。
+
+```powershell
+go run ./examples/download-continued
+```
+
+![download-continued](screenshots/download-continued.gif)
+
+### `download-speed`
+
+在 `download` 的基础上多了 `{bytes_per_sec}`。
+
+```powershell
+go run ./examples/download-speed
+```
+
+![download-speed](screenshots/download-speed.gif)
+
+### `fastbar`
+
+极大量、每次更新都极快的场景，用来看限速（默认 20Hz）下的出帧率与 `Elapsed()` 的耗时统计。
+
+```powershell
+go run ./examples/fastbar
+```
+
+![fastbar](screenshots/fastbar.gif)
+
+### `finebars`
+
+同一个 `MultiProgress` 里 5 条不同粒度、不同颜色的条各自独立推进
+（Rust 用 `thread::spawn`，Go 用 goroutine）。
+
+```powershell
+go run ./examples/finebars
+```
+
+![finebars](screenshots/finebars.gif)
+
+### `iterator`
+
+三种迭代器包装：
+
+1. `Progress(slice)` —— 用切片长度当总数（Rust 的 `size_hint`）
+2. `ProgressCount(slice, n)` —— 显式指定元素个数
+3. `ProgressWithSlice(slice, pb)` —— 用自定义样式的进度条
+
+取完元素时迭代器会按样式里的完成行为收尾（默认 `FinishUsingStyle`）。
+
+```powershell
+go run ./examples/iterator
+```
+
+![iterator](screenshots/iterator.gif)
+
+### `log`
+
+边推进边用 `Println` 打日志：日志行走 `MultiState` 的 orphan 行通道，不会把进度条画面冲乱。
+
+```powershell
+go run ./examples/log
+```
+
+![log](screenshots/log.gif)
+
+### `long-spinner`
+
+steady tick + 自定义 spinner 帧（更多帧见
+[cli-spinners](https://github.com/sindresorhus/cli-spinners/blob/master/spinners.json)）。
+
+```powershell
+go run ./examples/long-spinner
+```
+
+![long-spinner](screenshots/long-spinner.gif)
+
+### `morebars`
+
+`MultiProgress` 里一条总进度条统着多条子进度条。
+
+```powershell
+go run ./examples/morebars
+```
+
+![morebars](screenshots/morebars.gif)
+
+### `multi-tree`
+
+树形排列的进度条：元素按缩进逐级加入 `MultiProgress`，各自推进到满；整棵树填满后收尾，
+最后把树按缩进打印出来做对照。
+
+```powershell
+go run ./examples/multi-tree
+```
+
+![multi-tree](screenshots/multi-tree.gif)
+
+### `multi-tree-ext`
+
+`multi-tree` 的扩展版：除了「加进度条 / 推进进度条」，还能从树里摘掉进度条
+（要摘的都是 `temp_*`），并演示 `MultiProgress` 的垂直对齐 —— 加 `--bottom-alignment` 改成底部对齐。
+
+```powershell
+go run ./examples/multi-tree-ext              # 录屏用的是这个
+go run ./examples/multi-tree-ext --bottom-alignment
+```
+
+![multi-tree-ext](screenshots/multi-tree-ext.gif)
+
+### `single`
+
+最基础的单个进度条（1024 步 × 5ms，默认模板 `{wide_bar} {pos}/{len}`）。
+
+```powershell
+go run ./examples/single
+```
+
+![single](screenshots/single.gif)
+
+### `tokio`
+
+定时器驱动进度条：Rust 用 tokio 的 `interval` + `block_on`，Go 用 `time.Ticker`，语义等价
+（每 5ms 一个 tick，共 1024 步）。
+
+```powershell
+go run ./examples/tokio
+```
+
+![tokio](screenshots/tokio.gif)
+
+### `yarnish`
+
+模拟 yarn 安装时的四段式输出（解析 → 拉取 → 链接 → 构建），最后用 `HumanDuration` 报总耗时。
+
+```powershell
+go run ./examples/yarnish
+```
+
+![yarnish](screenshots/yarnish.gif)
+
 ## 索引的两套语义（与 Rust 一致）
 
 | API | Rust | Go | 含义 |
