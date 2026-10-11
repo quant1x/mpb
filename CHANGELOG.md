@@ -3,6 +3,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-11
+### Changed
+- fix[docs]: 适配新版本的版权信息配置文件名
+- chore：批量重录 GIF 的脚本收进 scripts/
+  把"用 VHS 重录 screenshots 下所有 GIF"这件重复劳动固化成脚本，PowerShell 与 bash 各一份、
+  行为一致（scripts/generate.ps1、scripts/generate.sh）：
+
+  - 自己切到仓库根目录再跑：tape 里的 Output 相对 cwd 解析，所以从任何目录调用都对；
+  - 跳过 _ 开头的探针 tape；
+  - 逐条打印产物大小与耗时，末尾汇总条数 / 总用时 / GIF 合计大小；
+  - 单条失败不中断，最后列出失败项并以退出码 1 结束，便于 CI 或人工发现漏录；
+  - vhs 不在 PATH 里时用环境变量 VHS 指定路径。
+
+  两个环境坑直接写进文件，免得下次再踩：
+
+  - ps1 必须存成**带 BOM 的 UTF-8** —— Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 GBK
+    解，中文注释会把脚本解析崩掉；
+  - 参数用 $args 读，不声明 [string[]]$Name —— 数组参数的位置绑定会把第一个实参喂给
+    后面的 -Vhs（实测踩到过）。
+
+  generate.sh 置可执行位：本机 core.filemode=false，git 不读文件系统位，用
+  git update-index --chmod=+x 写索引（100755）。
+
+  README 里那段手工 `Get-ChildItem | ForEach-Object { vhs ... }` 换成脚本用法。
+- docs：重录 16 个示例 GIF（压缩留白、按内容定高度）
+  留白：原先是 VHS 的默认留白，实测上下各约 65px、左 62px，看着像很宽的边框。每条 tape
+  加 Set Padding 6 后降到上下 6~20px、左右 6~8px。
+
+  高度：之前一律 600px，多数示例下面空着十几行。先标定 FontSize 20 下的尺子（行距 25px、
+  留白常量约 25px，Padding 6 时 Height ≈ 37 + 25 × 行数），再按每个示例的实际内容行数定
+  高度，各留一行余量：
+
+  - single / tokio / download / download-continued / download-speed / long-spinner：140
+  - iterator 165、fastbar 190、finebars 215、morebars 265、yarnish 290
+  - cargo、log（长流滚动）：340；cargowrap（会话式输出）：390
+  - multi-tree-ext 365；multi-tree 540（结尾要显示完整的树对照）
+
+  行数是像素级量出来的（把文字区压成一列灰度数亮带）；注意从 GIF 抽出的 PNG 是索引色，
+  直接读"灰度"读的是调色板下标，全是假数，改为解码成 RGB 再算亮度。回量确认没有内容被
+  切掉（cargo / log / cargowrap 是滚动流，占满属预期）。
+
+  GIF 合计 10.7MB → 6.4MB。
+- release version 0.1.4
+
 ## [0.1.3] - 2026-10-11
 ### Changed
 - perf[go]：StdTerm 改为带缓冲，一帧只写一次终端
@@ -220,7 +264,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.3...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.4...HEAD
+[0.1.4]: https://gitee.com/quant1x/mpb/compare/v0.1.3...v0.1.4
 [0.1.3]: https://gitee.com/quant1x/mpb/compare/v0.1.2...v0.1.3
 [0.1.2]: https://gitee.com/quant1x/mpb/compare/v0.1.1...v0.1.2
 [0.1.1]: https://gitee.com/quant1x/mpb/compare/v0.1.0...v0.1.1
