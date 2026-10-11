@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-11
+### Changed
+- fix[go]: 清理未引用的依赖
+- release version 0.1.5
+
 ## [0.1.4] - 2026-10-11
 ### Changed
 - fix[docs]: 适配新版本的版权信息配置文件名
@@ -264,7 +269,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.4...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.5...HEAD
+[0.1.5]: https://gitee.com/quant1x/mpb/compare/v0.1.4...v0.1.5
 [0.1.4]: https://gitee.com/quant1x/mpb/compare/v0.1.3...v0.1.4
 [0.1.3]: https://gitee.com/quant1x/mpb/compare/v0.1.2...v0.1.3
 [0.1.2]: https://gitee.com/quant1x/mpb/compare/v0.1.1...v0.1.2
