@@ -48,10 +48,26 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 16 个示例与上游 `examples/` 一一对应，动画用 [VHS](https://github.com/charmbracelet/vhs) 录制，
 tape 文件与 GIF 同名，都在 `screenshots/`：
 
+批量重录用 `scripts/` 下的两个脚本（PowerShell 与 bash 各一份，行为一致；脚本自己会切到
+仓库根目录，所以从任何地方调用都行 —— tape 里的 `Output` 路径相对 cwd 解析）：
+
 ```powershell
-# 逐条重录（必须从仓库根目录跑：tape 里的 Output 路径相对 cwd 解析）
-Get-ChildItem screenshots -Filter '*.tape' | ForEach-Object { vhs $_.FullName -q }
+./scripts/generate.ps1              # 全部 16 条
+./scripts/generate.ps1 single log   # 只重录指定的几条（基名，不带扩展名）
+
+$env:VHS = 'c:\runtime\work\bin\vhs.exe'   # vhs 不在 PATH 里时这么指定
+./scripts/generate.ps1
 ```
+
+```bash
+./scripts/generate.sh              # 全部 16 条
+./scripts/generate.sh single log   # 只重录指定的几条
+
+VHS=/path/to/vhs ./scripts/generate.sh
+```
+
+两条脚本都会跳过 `_` 开头的探针 tape，逐条打印产物大小与耗时，失败时列出失败的 tape 并以
+退出码 1 结束。
 
 ### `cargo`
 
