@@ -4,7 +4,8 @@ Output screenshots/cargo.gif
 # 设置终端外观
 Set FontSize 20
 Set Width 1200
-Set Height 600
+Set Height 340
+Set Padding 6
 #Theme "Catppuccin Mocha"
 
 # 模拟输入和运行
