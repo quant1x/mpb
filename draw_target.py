@@ -15,37 +15,42 @@ from typing import Any
 from ._types import LineAdjust, LineAdjustKind
 from .in_memory import InMemoryTerm
 from .state import DrawState, DrawStateWrapper, draw_to_term
-from .term_like import StdTerm, TermLike, new_stderr_term, new_std_term
+from .term_like import TermLike, new_stderr_term, new_std_term
 
 _MAX_BURST = 20
 
 
 class RateLimiter:
-    """Token bucket with a fixed refresh interval (seconds)."""
+    """Token bucket with a fixed refresh interval.
+
+    Mirrors Rust/Go exactly: ``interval`` is in **milliseconds**, capacity is
+    20, and the previous allowance is stored as a monotonic nanosecond stamp.
+    """
 
     def __init__(self, rate: int) -> None:
-        self.interval = (1.0 / rate) if rate else 1.0
+        self.interval = (1000 // rate) if rate else 1000
+        self.interval_ns = self.interval * 1_000_000
         self.capacity = _MAX_BURST
-        self.prev = time.monotonic()
+        self.prev_ns = time.monotonic_ns()
 
     def allow(self, now: float | None = None) -> bool:
         if now is None:
-            now = time.monotonic()
-        if now < self.prev:
-            return False
-
-        elapsed = now - self.prev
-        if self.capacity == 0 and elapsed < self.interval:
-            return False
-
-        new_intervals = int(elapsed / self.interval)
-        remainder = elapsed - new_intervals * self.interval
-        if new_intervals > 0:
-            capacity = self.capacity + new_intervals - 1
+            now_ns = time.monotonic_ns()
         else:
-            capacity = self.capacity - 1 if self.capacity > 0 else 0
+            now_ns = int(now * 1_000_000_000)
+        if now_ns < self.prev_ns:
+            return False
+
+        elapsed_ns = now_ns - self.prev_ns
+        if self.capacity == 0 and elapsed_ns < self.interval_ns:
+            return False
+
+        # Rust: elapsed.as_millis() / self.interval, remainder in ns.
+        new_intervals = (elapsed_ns // 1_000_000) // self.interval
+        remainder = elapsed_ns % self.interval_ns
+        capacity = self.capacity + new_intervals - 1
         self.capacity = min(_MAX_BURST, capacity)
-        self.prev = now - remainder
+        self.prev_ns = now_ns - remainder
         return True
 
 
@@ -117,6 +122,9 @@ class TermDrawTargetBase(ProgressDrawTarget):
         self._mu = threading.RLock()
         self.term = term
         self.stderr = stderr
+        # Rust captures `term.is_term()` when constructing TargetKind::Term;
+        # later changes to the TermLike do not make the bar hide/show.
+        self.term_is_term = bool(getattr(term, "is_term", lambda: False)())
         self.rate_limiter = RateLimiter(rate) if rate is not None else None
         self.last_line_count = 0
         self.draw_state = DrawState(lines=[], contents=[])
@@ -154,7 +162,7 @@ class TermDrawTarget(TermDrawTargetBase):
     """A real terminal (``Term`` variant)."""
 
     def is_hidden(self) -> bool:
-        return not getattr(self.term, "is_term", lambda: False)()
+        return not self.term_is_term
 
 
 class TermLikeDrawTarget(TermDrawTargetBase):

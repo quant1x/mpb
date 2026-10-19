@@ -141,9 +141,14 @@ def human_count(value: int) -> str:
 
 def human_float_count(value: float, precision: int = 4) -> str:
     """``HumanFloatCount``: fixed precision, thousands separators, no trailing zeros."""
-    if not math.isfinite(value):
-        return str(value)
-    text = f"{value:.{precision}f}"
+    if math.isnan(value):
+        text = "NaN"
+    elif math.isinf(value):
+        # Go formats infinities as "+Inf" / "-Inf"; the generic grouping below
+        # then produces "+,Inf" for the positive case, matching the Go port.
+        text = "+Inf" if value > 0 else "-Inf"
+    else:
+        text = f"{value:.{precision}f}"
     int_part, _, frac_part = text.partition(".")
     frac_part = frac_part.rstrip("0")
 

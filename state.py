@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, Callable
 
 from ._types import (
+    U64_MAX,
     LineType,
     MultiProgressAlignment,
     f32,
@@ -285,7 +286,7 @@ class ProgressState:
     def __init__(self, length: int | None, pos: "AtomicPosition") -> None:
         now = time.monotonic()
         self.pos_obj = pos
-        self.length = length
+        self.length = None if length is None else (int(length) & U64_MAX)
         self.tick = 0
         self.started = now
         self.status = status_in_progress()
@@ -330,7 +331,8 @@ class ProgressState:
             return self.est.steps_per_second(time.monotonic())
         elapsed = self.elapsed()
         if elapsed <= 0:
-            return 0.0
+            # Rust: pos as f64 / elapsed.as_secs_f64()
+            return math.inf if self.pos_obj.pos() > 0 else math.nan
         return self.pos_obj.pos() / elapsed
 
     def elapsed(self) -> float:
@@ -346,7 +348,7 @@ class ProgressState:
         return self.length
 
     def set_len(self, value: int) -> None:
-        self.length = value
+        self.length = int(value) & U64_MAX
 
 
 # ---------------------------------------------------------------------------
@@ -369,15 +371,17 @@ class AtomicPosition:
 
     def inc(self, delta: int) -> None:
         with self._lock:
-            self._pos += delta
+            self._pos = (self._pos + delta) & U64_MAX
 
     def dec(self, delta: int) -> None:
         with self._lock:
-            self._pos = max(0, self._pos - delta)
+            # Rust/Go use AtomicU64::fetch_sub / atomic.AddUint64(^delta+1):
+            # underflow wraps modulo 2**64.
+            self._pos = (self._pos - delta) & U64_MAX
 
     def set(self, value: int) -> None:
         with self._lock:
-            self._pos = value
+            self._pos = value & U64_MAX
 
     def pos(self) -> int:
         with self._lock:
@@ -466,7 +470,27 @@ class BarState:
         self.state = ProgressState(length, pos)
         self.tab_width = DEFAULT_TAB_WIDTH
         self._ticker: TickerHandle | None = None
-        self._finalizer: Any = None
+        self._finalized = False
+
+    def __del__(self) -> None:
+        """Emulate ``Drop for BarState``: finish with on_finish, then mark zombie.
+
+        Go does the same from a ``runtime.SetFinalizer``.  Finalization is
+        best-effort: a bar that is still held by a ``MultiState`` member (both
+        ports keep a strong reference) will not be collected.
+        """
+        try:
+            if getattr(self, "_finalized", False):
+                return
+            self._finalized = True
+            if not self.state.is_finished():
+                try:
+                    self.finish_using_style(time.monotonic(), self.on_finish)
+                except Exception:
+                    pass
+            self.draw_target.mark_zombie()
+        except Exception:
+            pass
 
     # -- completion -----------------------------------------------------------
 
@@ -518,13 +542,13 @@ class BarState:
 
     def set_length(self, now: float, length: int) -> None:
         with self._lock:
-            self.state.length = length
+            self.state.length = int(length) & U64_MAX
             self._update_estimate_and_draw(now)
 
     def inc_length(self, now: float, delta: int) -> None:
         with self._lock:
             if self.state.length is not None:
-                self.state.length = self.state.length + delta
+                self.state.length = min(U64_MAX, self.state.length + delta)
             self._update_estimate_and_draw(now)
 
     def dec_length(self, now: float, delta: int) -> None:
@@ -542,6 +566,9 @@ class BarState:
 
     def set_style(self, style: ProgressStyle) -> None:
         with self._lock:
+            # Go takes ProgressStyle by value; clone so later mutations of the
+            # caller's style cannot leak into this bar (and vice versa).
+            style = style.clone()
             if self.draw_target is not None and self.draw_target.is_stderr():
                 style.set_for_stderr()
             self.style = style
@@ -552,7 +579,8 @@ class BarState:
             self._tick_locked(now)
 
     def _tick_locked(self, now: float) -> None:
-        self.state.tick += 1
+        if self.state.tick < U64_MAX:
+            self.state.tick += 1
         self._update_estimate_and_draw(now)
 
     def _update_estimate_and_draw(self, now: float) -> None:
@@ -686,6 +714,10 @@ class BarState:
                         return i, True
             return 0, False
 
+    def remote_target(self) -> tuple[RemoteStub | None, int, bool]:
+        with self._lock:
+            return self.draw_target.remote()
+
     # -- convenience accessors ------------------------------------------------
 
     def is_finished(self) -> bool:
@@ -734,7 +766,7 @@ class BarState:
 
     def current_style(self) -> ProgressStyle:
         with self._lock:
-            return self.style
+            return self.style.clone()
 
     def set_on_finish(self, finish: ProgressFinish) -> None:
         with self._lock:

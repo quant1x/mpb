@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -45,6 +45,9 @@ class _AnsiParser:
         if mode == "normal":
             if ch == "\x1b":
                 state.mode = "esc"
+            elif ch == "\x9b":
+                state.mode = "csi"
+                state.params = ""
             elif ch == "\r":
                 term._cursor_col = 0
             elif ch == "\n":

@@ -9,19 +9,24 @@ from __future__ import annotations
 import unittest
 
 from mpb import (
+    DEFAULT_WIDTH,
     AtomicPosition,
+    ProgressBar,
     ProgressStyle,
     ProgressState,
     Style,
     TemplateError,
+    Width,
     apply_ansi_style,
     formatted_duration,
+    hidden_draw_target,
     human_bytes,
     human_count,
     human_duration,
     human_float_count,
     measure_text_width,
     pad_and_truncate,
+    progress_style_with_template,
     template_from_str,
 )
 
@@ -114,7 +119,7 @@ class StyleTests(unittest.TestCase):
             apply_ansi_style("x", "bold.underlined"),
             "\x1b[1m\x1b[4mx\x1b[0m",
         )
-        self.assertEqual(apply_ansi_style("x", "italic"), "x")
+        self.assertEqual(apply_ansi_style("x", "italic"), "\x1b[3mx\x1b[0m")
 
     def test_format_bar_splits_style_and_alt_style(self) -> None:
         style = ProgressStyle(template_from_str("{bar:20.red/blue}"))
@@ -165,6 +170,40 @@ class StyleTests(unittest.TestCase):
         _, lines = style.format_state(state, 80)
         self.assertEqual(lines, ["a    b"])
 
+    def test_style_builders_copy_like_go(self) -> None:
+        base = progress_style_with_template("{pos}")
+        changed = base.with_template("{len}")
+        self.assertEqual(base.template.parts[0].key, "pos")
+        self.assertEqual(changed.template.parts[0].key, "len")
+
+        chars = base.with_progress_chars("##-")
+        self.assertEqual(base.progress_chars, ["█", "░"])
+        self.assertEqual(chars.progress_chars, ["#", "#", "-"])
+
+        ticks = base.with_tick_strings(["a", "b"])
+        self.assertNotEqual(base.tick_strings[:2], ["a", "b"])
+        self.assertEqual(ticks.tick_strings, ["a", "b"])
+
+    def test_style_value_semantics_on_bar(self) -> None:
+        style = progress_style_with_template("{pos}")
+        pb = ProgressBar.with_draw_target(10, hidden_draw_target())
+        pb.set_style(style)
+        style.set_progress_chars("x-")
+        self.assertEqual(pb.style().progress_chars, ["█", "░"])
+
+    def test_template_width_overflow_is_ignored(self) -> None:
+        tpl = template_from_str("{a:>9999999999999999999999999999}")
+        self.assertEqual(tpl.parts[0].width, 0)
+
+    def test_width_switch_is_global(self) -> None:
+        other = Width()
+        try:
+            DEFAULT_WIDTH.set_default_cjk(True)
+            self.assertEqual(other.char("█"), 2)
+            self.assertEqual(other.ansi_str("██"), 4)
+        finally:
+            DEFAULT_WIDTH.set_default_cjk(False)
+
     def test_measure_ansi(self) -> None:
         self.assertEqual(measure_text_width("\x1b[31mabc\x1b[0m"), 3)
 
@@ -184,6 +223,9 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(human_float_count(1234.5678), "1,234.5678")
         self.assertEqual(human_float_count(-100000, 0), "-100,000")
         self.assertEqual(human_float_count(-0.4, 0), "0")
+        self.assertEqual(human_float_count(float("inf")), "+,Inf")
+        self.assertEqual(human_float_count(float("-inf")), "-Inf")
+        self.assertEqual(human_float_count(float("nan")), "NaN")
 
     def test_durations(self) -> None:
         self.assertEqual(formatted_duration(3661), "01:01:01")

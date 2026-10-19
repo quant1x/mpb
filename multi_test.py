@@ -199,6 +199,16 @@ class IterTests(unittest.TestCase):
         self.assertFalse(pb.is_finished())
         self.assertEqual(len(it), 0)
 
+    def test_map_parallel_exhausts_generator(self) -> None:
+        pb = ProgressBar.with_draw_target(None, hidden_draw_target())
+        it = ProgressBarIter(iter(range(5)), pb)
+        result = map_parallel(it, 2, lambda value: value * 2)
+        self.assertEqual(result, [0, 2, 4, 6, 8])
+        self.assertEqual(pb.position(), 5)
+        self.assertEqual(len(it), 0)
+        self.assertEqual(list(it), [])
+        self.assertTrue(pb.is_finished())
+
     def test_reader_writer(self) -> None:
         pb = ProgressBar.with_draw_target(100, hidden_draw_target())
         reader = ProgressReader(io.BytesIO(b"x" * 20), pb)
@@ -268,6 +278,23 @@ class SharingTests(unittest.TestCase):
         self.assertTrue(pb2.is_finished())
         self.assertEqual(pb2.position(), 0)
         self.assertEqual(pb2.message(), "stopped")
+
+    def test_uint64_position_and_length_semantics(self) -> None:
+        pb = ProgressBar.with_draw_target(1, hidden_draw_target())
+        pb.set_position(1)
+        pb.dec(2)
+        self.assertEqual(pb.position(), (1 << 64) - 1)
+
+        pb.set_length((1 << 64) - 1)
+        pb.inc_length(10)
+        self.assertEqual(pb.length(), (1 << 64) - 1)
+        pb.dec_length(10**30)
+        self.assertEqual(pb.length(), 0)
+
+        with self.assertRaises(ValueError):
+            pb.inc(-1)
+        with self.assertRaises(ValueError):
+            pb.set_position(-1)
 
     def test_update(self) -> None:
         pb = ProgressBar.with_draw_target(10, hidden_draw_target())

@@ -256,7 +256,7 @@ go run ./examples/yarnish
 
 要"第几条 bar"用 `VisualIndex()`，不要用 `Index()`。
 
-## 与上游的一处有意差异
+## 与上游的有意差异
 
 - **宽度开关**：Rust 的 `Width::set_default_cjk(bool)` 在 Go 侧是 `DefaultWidth.SetDefaultCJK(bool)`
   （底层是 go-runewidth 的 `EastAsianWidth` 条件）。
@@ -287,7 +287,7 @@ Python 实现与 Go 实现**同目录并排**存放（与 `mopr` 的组织方式
 | `iter.go` / `rayon.go` | `iter.py` |
 | `format.go` | `format.py` |
 | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` |
-| `weakref.go` | `WeakProgressBar` / `weakref.finalize` |
+| `weakref.go` | `WeakProgressBar` / `BarState.__del__` |
 | `doc.go` | `__init__.py` |
 
 安装与使用（在仓库根目录执行）：
@@ -322,10 +322,44 @@ mp.println("start")
 stderr，重定向到文件/管道时整条进度条隐藏；要在测试里拿渲染结果请用
 `InMemoryTerm` + `in_memory_draw_target`。
 
+### Python 与 Go 的已知差异
+
+下面这些差异来自语言/运行时，不是渲染语义偏差；模板、限速、多进度条、僵尸行/清除行为
+已逐项对齐：
+
+- **时间单位**：Python 的 `eta()` / `elapsed()` / `duration()` / `set_elapsed()` /
+  `enable_steady_tick()` / `human_duration()` / `formatted_duration()` 使用秒（`float`），
+  Go 使用 `time.Duration`；数值等价。
+- **错误处理**：Python 用异常（`TemplateError`、`ValueError`），Go 用 `(value, error)`；
+  `MultiProgress.println()` / `clear()` 在 Python 返回 `None`。
+- **迭代器**：Python 的 `progress()` 支持任意可迭代对象/生成器（未知长度时 bar 无总长），
+  `next_back()` 需要可索引序列；Go 只包装切片。`map_parallel()` 用线程池保持输入顺序
+  （GIL 下 CPU 密集不会真正并行，I/O 密集可用）。
+- **格式化 API**：Go 的 `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等是实现了
+  `String`/`Format` 的类型，Python 是对应函数；输出逐字一致。
+- **样式拷贝**：Python 的 `set_style()` / `style()` / `with_*` 按值语义克隆 `ProgressStyle`
+  （template、tracker map 一并复制），避免 Go 结构体浅拷贝导致的共享；渲染结果一致。
+- **整数边界**：位置/长度按 Rust/Go 的 `u64` 语义处理（位置回绕、长度与增量饱和）；
+  Python 内部是任意精度整数，因此在边界处显式取模/钳位，负数位置/增量直接抛 `ValueError`
+  （Go 由 `uint64` 类型在编译期拒绝）。
+- **宽度表**：Python 用 `unicodedata` + 手写规则，Rust 用 `unicode-width` 0.2.2，
+  Go 用 `go-runewidth`。ASCII/Latin/CJK/emoji/方块/盲文等常用区间一致；约 4k 个
+  生僻/未分配码点（主要是组合记号与 Unicode 版本差异）可能有 0/1/2 列差异。
+- **内存终端**：Python 的 `InMemoryTerm` 是 VT100 子集（CSI A/B/C/D/H/f/K/J、SGR 忽略），
+  Go 用 `go-vte`；mpb 自身产生的序列两边一致。
+- **标准终端**：Python `StdTerm` 接收文本流（`str`），Go `io.Writer` 接收字节；
+  重定向/非 TTY 时两者都隐藏进度条。
+- **锁**：Python 使用 `RLock`，`suspend` 回调内重入同一 bar/multi 不会死锁；Go/Rust 的
+  Mutex 非重入，这是 Python 侧更宽松的行为。
+- **Drop/僵尸**：两版 `MultiStateMember` 都强引用 `BarState`（Rust 不持有强引用）。因此
+  一条仍挂在 `MultiProgress` 上的 bar 被丢弃时，Go/Python 都不会立即自动 finish/zombie；
+  需要显式 `finish()` / `abandon()` / `remove()`。独立 bar 的 Python `BarState.__del__`
+  会尽力模拟 Rust 的 Drop（finish + mark_zombie），时机不保证。
+
 测试与示例（Python 测试沿用 `*_test.py` 命名，与 mopr 一致，用 pytest 收集）：
 
 ```bash
-python -m pytest                       # 58 个测试
+python -m pytest                       # 64 个测试
 python examples/single/main.py         # 17 个示例，与 Go 示例目录一一对应
 python examples/multi-tree/main.py
 ```

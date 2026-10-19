@@ -139,7 +139,7 @@ class MultiProgress:
 def _remote_target_of(pb: Any) -> tuple[RemoteStub | None, int, bool]:
     if pb is None or getattr(pb, "state", None) is None:
         return None, 0, False
-    return pb.state.draw_target.remote()
+    return pb.state.remote_target()
 
 
 class MultiState:

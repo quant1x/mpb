@@ -188,9 +188,11 @@ def new_stderr_term() -> StdTerm:
 
 
 def new_std_term_with_writer(writer: io.TextIOBase, buffered: bool = False) -> StdTerm:
-    """Convenience constructor for an arbitrary writer.
+    """Wrap an arbitrary writer.
 
-    Mirrors the Go helper: this does not try to treat non-file writers as
-    terminals.
+    Mirrors Go's ``newStdTermWithWriter``: when the writer is backed by a file
+    descriptor, probe ``isatty``/terminal size; otherwise fall back to 80x20
+    and ``is_term=False``.
     """
-    return StdTerm(writer, buffered=buffered, file=None)
+    file = writer if _has_fileno(writer) else None
+    return StdTerm(writer, buffered=buffered, file=file)

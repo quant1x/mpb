@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import string
 import unicodedata
 from dataclasses import dataclass, field
@@ -20,7 +21,7 @@ from .format import (
     human_duration,
     human_float_count,
 )
-from ._types import LineType, f32
+from ._types import U64_MAX, LineType, f32
 
 # ---------------------------------------------------------------------------
 # Width
@@ -32,24 +33,26 @@ class Width:
 
     Ambiguous East-Asian characters (``█``, ``○``, ``±`` ...) are one column
     by default.  ``set_default_cjk(True)`` switches them to two columns.
+
+    Rust keeps this switch in a global atomic, so every ``Width`` value shares
+    it; Python mirrors that with a module-level flag.
     """
 
-    def __init__(self) -> None:
-        self._cjk = False
-
     def set_default_cjk(self, is_cjk: bool) -> None:
-        self._cjk = bool(is_cjk)
+        global _CJK_WIDE
+        _CJK_WIDE = bool(is_cjk)
 
     def char(self, ch: str) -> int:
-        return char_width(ch, self._cjk)
+        return char_width(ch, _CJK_WIDE)
 
     def str(self, s: str) -> int:
-        return str_width(s, self._cjk)
+        return str_width(s, _CJK_WIDE)
 
     def ansi_str(self, s: str) -> int:
         return measure_text_width(s)
 
 
+_CJK_WIDE = False
 DEFAULT_WIDTH = Width()
 
 
@@ -214,7 +217,7 @@ def measure_text_width(s: str) -> int:
     total = 0
     for text, is_ansi in ansi_segments(s):
         if not is_ansi:
-            total += str_width(text, DEFAULT_WIDTH._cjk)
+            total += str_width(text, _CJK_WIDE)
     return total
 
 
@@ -274,6 +277,15 @@ def pad_and_truncate(s: str, width: int, align: str, truncate: bool) -> str:
     return " " * left_pad + s + " " * right_pad
 
 
+def _u64_from_float(value: float) -> int:
+    """Rust's saturating ``f64 as u64`` cast (NaN -> 0, +Inf -> u64::MAX)."""
+    if math.isnan(value) or value <= 0:
+        return 0
+    if math.isinf(value):
+        return U64_MAX
+    return min(int(value), U64_MAX)
+
+
 # ---------------------------------------------------------------------------
 # Style specs (console::Style)
 # ---------------------------------------------------------------------------
@@ -302,6 +314,7 @@ _FG_NAMES = {
 _ATTR_NAMES = {
     "bold": _ATTR_BOLD,
     "dim": _ATTR_DIM,
+    "italic": _ATTR_ITALIC,
     "underlined": _ATTR_UNDERLINED,
     "blink": _ATTR_BLINK,
     "blink_fast": _ATTR_BLINK_FAST,
@@ -471,6 +484,31 @@ class Template:
     @classmethod
     def from_str_with_tab_width(cls, text: str, tab_width: int) -> "Template":
         return template_from_str_with_tab_width(text, tab_width)
+
+    def clone(self) -> "Template":
+        def copy_part(part: TemplatePart) -> TemplatePart:
+            return TemplatePart(
+                is_placeholder=part.is_placeholder,
+                text=part.text,
+                key=part.key,
+                align=part.align,
+                width=part.width,
+                truncate=part.truncate,
+                style=None
+                if part.style is None
+                else Style(spec=part.style.spec, spec_err=part.style.spec_err),
+                alt_style=None
+                if part.alt_style is None
+                else Style(spec=part.alt_style.spec, spec_err=part.alt_style.spec_err),
+            )
+
+        return Template(
+            parts=[copy_part(part) for part in self.parts],
+            original_texts=None
+            if self.original_texts is None
+            else list(self.original_texts),
+            current_tab_width=self.current_tab_width,
+        )
 
     def set_tab_width(self, new_tab_width: int) -> None:
         if new_tab_width <= 0 or self.current_tab_width == new_tab_width:
@@ -650,9 +688,14 @@ def template_from_str_with_tab_width(s: str, tab_width: int) -> Template:
             part = last_placeholder()
             if part is not None:
                 try:
-                    part.width = int(buf_text())
+                    value = int(buf_text())
                 except ValueError:
                     pass
+                else:
+                    # Go's strconv.Atoi overflows at MaxInt64 and the width
+                    # stays 0; mirror that instead of allocating huge strings.
+                    if 0 <= value <= (1 << 63) - 1:
+                        part.width = value
             clear_buf()
         elif state == _STATE_FIRST_STYLE and new_state in (_STATE_ALT_STYLE, _STATE_LITERAL) and buf:
             part = last_placeholder()
@@ -748,6 +791,24 @@ class ProgressStyle:
         width = measure_text_width(self.progress_chars[0])
         self.char_width = width if width > 0 else 1
 
+    def clone(self) -> "ProgressStyle":
+        """Value-copy semantics, matching Go's ``ProgressStyle`` copy.
+
+        The template and tracker map are copied deeply enough that mutating
+        the clone (``set_tab_width``, ``set_for_stderr``, ``with_key`` ...)
+        cannot change the original.
+        """
+        new = object.__new__(ProgressStyle)
+        new.tick_strings = list(self.tick_strings)
+        new.progress_chars = list(self.progress_chars)
+        new.template = self.template.clone()
+        new.tab_width = self.tab_width
+        new.char_width = self.char_width
+        new.format_map = {
+            key: tracker.clone() for key, tracker in self.format_map.items()
+        }
+        return new
+
     # -- configuration --------------------------------------------------------
 
     def set_tab_width(self, width: int) -> None:
@@ -777,7 +838,9 @@ class ProgressStyle:
         return self
 
     def with_progress_chars(self, chars: str) -> "ProgressStyle":
-        return self.progress_chars_setting(chars)
+        new = self.clone()
+        new.set_progress_chars(chars)
+        return new
 
     def tick_chars(self, chars: str) -> "ProgressStyle":
         parts = list(chars)
@@ -787,7 +850,9 @@ class ProgressStyle:
         return self
 
     def with_tick_chars(self, chars: str) -> "ProgressStyle":
-        return self.tick_chars(chars)
+        new = self.clone()
+        new.tick_chars(chars)
+        return new
 
     def tick_strings_setting(self, strings: Iterable[str]) -> "ProgressStyle":
         values = list(strings)
@@ -796,11 +861,14 @@ class ProgressStyle:
         return self
 
     def with_tick_strings(self, strings: Iterable[str]) -> "ProgressStyle":
-        return self.tick_strings_setting(strings)
+        new = self.clone()
+        new.tick_strings_setting(strings)
+        return new
 
     def with_template(self, template: str) -> "ProgressStyle":
-        self.template = template_from_str(template)
-        return self
+        new = self.clone()
+        new.template = template_from_str(template)
+        return new
 
     def with_key(self, key: str, func: Callable[[Any], str]) -> "ProgressStyle":
         self.format_map[key] = FuncTracker(
@@ -835,7 +903,7 @@ class ProgressStyle:
 
     def format_state(
         self, state: Any, target_width: int, for_stderr: bool = False
-    ) -> tuple[list[int], list[str]]:
+    ) -> tuple[list[LineType], list[str]]:
         pos = state.pos()
         length = state.len()
         if length is None:
@@ -944,11 +1012,11 @@ class ProgressStyle:
                 else:
                     buf = human_float_count(per_sec) + "/s"
             elif key == "bytes_per_sec":
-                buf = human_bytes(int(state.per_sec())) + "/s"
+                buf = human_bytes(_u64_from_float(state.per_sec())) + "/s"
             elif key == "decimal_bytes_per_sec":
-                buf = decimal_bytes(int(state.per_sec())) + "/s"
+                buf = decimal_bytes(_u64_from_float(state.per_sec())) + "/s"
             elif key == "binary_bytes_per_sec":
-                buf = binary_bytes(int(state.per_sec())) + "/s"
+                buf = binary_bytes(_u64_from_float(state.per_sec())) + "/s"
 
             lines[-1] += emit(buf)
 

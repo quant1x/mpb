@@ -77,6 +77,7 @@ class ProgressBarIter:
         self._iterable = iterable
         self._progress = progress
         self._seek_max = SeekMax()
+        self._exhausted = False
         self._indexed = hasattr(iterable, "__len__") and hasattr(iterable, "__getitem__")
         if self._indexed:
             self._idx = 0
@@ -91,8 +92,13 @@ class ProgressBarIter:
         return self
 
     def __next__(self) -> Any:
+        if self._exhausted:
+            self._finish()
+            raise StopIteration
+
         if self._indexed:
             if self._idx >= self._end:
+                self._exhausted = True
                 self._finish()
                 raise StopIteration
             item = self._iterable[self._idx]  # type: ignore[index]
@@ -104,6 +110,7 @@ class ProgressBarIter:
         try:
             item = next(self._iter)
         except StopIteration:
+            self._exhausted = True
             self._finish()
             raise
         self._progress.inc(1)
@@ -112,7 +119,11 @@ class ProgressBarIter:
     def next_back(self) -> Any:
         if not self._indexed:
             raise TypeError("next_back requires a sized/indexable iterable")
+        if self._exhausted:
+            self._finish()
+            raise StopIteration
         if self._idx >= self._end:
+            self._exhausted = True
             self._finish()
             raise StopIteration
         self._end -= 1
@@ -121,10 +132,13 @@ class ProgressBarIter:
         return item
 
     def _finish(self) -> None:
+        self._exhausted = True
         if not self._progress.is_finished():
             self._progress.finish_using_style()
 
     def __len__(self) -> int:
+        if self._exhausted:
+            return 0
         if self._indexed:
             return self._end - self._idx
         length = getattr(self._progress, "length", lambda: None)()
@@ -260,6 +274,8 @@ def map_parallel(
         items = list(progress_iter._iter) if progress_iter._iter is not None else []
         progress_iter._idx = 0
         progress_iter._end = 0
+        progress_iter._iter = None
+    progress_iter._exhausted = True
 
     def work(item: Any) -> Any:
         progress_iter._progress.inc(1)

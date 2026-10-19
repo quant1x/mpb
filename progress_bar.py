@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 import weakref
 from typing import Any, Callable, Iterable
@@ -31,11 +30,9 @@ from .style import (
 )
 
 
-def _finalize_bar(draw_target: ProgressDrawTarget) -> None:
-    try:
-        draw_target.mark_zombie()
-    except Exception:
-        pass
+def _check_length(length: int | None) -> None:
+    if length is not None and length < 0:
+        raise ValueError("length must be >= 0")
 
 
 class ProgressBar:
@@ -47,15 +44,9 @@ class ProgressBar:
     """
 
     def __init__(self, length: int | None = None) -> None:
+        _check_length(length)
         self.pos = AtomicPosition()
         self.state = BarState(length, stderr_draw_target(), self.pos)
-        self._install_finalizer()
-
-    def _install_finalizer(self) -> None:
-        try:
-            weakref.finalize(self.state, _finalize_bar, self.state.draw_target)
-        except TypeError:
-            pass
 
     # -- alternative constructors --------------------------------------------
 
@@ -75,17 +66,16 @@ class ProgressBar:
         obj = object.__new__(cls)
         obj.pos = AtomicPosition()
         obj.state = BarState(None, hidden_draw_target(), obj.pos)
-        obj._install_finalizer()
         return obj
 
     @classmethod
     def with_draw_target(
         cls, length: int | None, draw_target: ProgressDrawTarget
     ) -> "ProgressBar":
+        _check_length(length)
         obj = object.__new__(cls)
         obj.pos = AtomicPosition()
         obj.state = BarState(length, draw_target, obj.pos)
-        obj._install_finalizer()
         return obj
 
     @classmethod
@@ -97,18 +87,24 @@ class ProgressBar:
     # -- progress -------------------------------------------------------------
 
     def inc(self, delta: int = 1) -> None:
+        if delta < 0:
+            raise ValueError("delta must be >= 0")
         self.pos.inc(delta)
         now_ns = time.monotonic_ns()
         if self.pos.allow(now_ns):
             self._tick(now_ns / 1_000_000_000)
 
     def dec(self, delta: int = 1) -> None:
+        if delta < 0:
+            raise ValueError("delta must be >= 0")
         self.pos.dec(delta)
         now_ns = time.monotonic_ns()
         if self.pos.allow(now_ns):
             self._tick(now_ns / 1_000_000_000)
 
     def set_position(self, position: int) -> None:
+        if position < 0:
+            raise ValueError("position must be >= 0")
         self.pos.set(position)
         now_ns = time.monotonic_ns()
         if self.pos.allow(now_ns):
@@ -204,6 +200,8 @@ class ProgressBar:
         self.state.set_message(msg)
 
     def set_elapsed(self, elapsed: float) -> None:
+        if elapsed < 0:
+            raise ValueError("elapsed must be >= 0")
         self.state.set_elapsed(elapsed)
 
     def update(self, func: Callable[[ProgressState], None]) -> None:
@@ -213,12 +211,17 @@ class ProgressBar:
         self.state.unset_length(time.monotonic())
 
     def set_length(self, length: int) -> None:
+        _check_length(length)
         self.state.set_length(time.monotonic(), length)
 
     def inc_length(self, delta: int) -> None:
+        if delta < 0:
+            raise ValueError("delta must be >= 0")
         self.state.inc_length(time.monotonic(), delta)
 
     def dec_length(self, delta: int) -> None:
+        if delta < 0:
+            raise ValueError("delta must be >= 0")
         self.state.dec_length(time.monotonic(), delta)
 
     # -- values ---------------------------------------------------------------

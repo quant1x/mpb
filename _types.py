@@ -10,6 +10,8 @@ import struct
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
+U64_MAX = (1 << 64) - 1
+
 
 def f32(value: float) -> float:
     """Round a Python float to IEEE-754 single precision.
