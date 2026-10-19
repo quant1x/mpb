@@ -181,6 +181,17 @@ void test_iterators_and_seek() {
     writer.write("hello");
     require(writer_bar->position() == 5, "writer position");
     require(output.str() == "hello", "writer output");
+
+    auto parallel_bar = mpb::ProgressBar::make(10);
+    mpb::ProgressBarIter<int> parallel(std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+                                       parallel_bar);
+    const auto mapped = mpb::map_parallel(
+        parallel, 4, [](const int& value) { return value * value; });
+    require(mapped.size() == 10 && mapped[3] == 9 && mapped[9] == 81,
+            "map_parallel order");
+    require(parallel_bar->position() == 10, "map_parallel position");
+    require(parallel.len() == 0, "map_parallel consumed");
+    require(!parallel_bar->is_finished(), "map_parallel does not finish");
 }
 
 void test_in_memory_and_limiter() {

@@ -6,13 +6,17 @@
 #define MPB_ITER_H 1
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <istream>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -113,6 +117,12 @@ public:
     std::size_t len() const { return end_ - index_; }
     std::size_t size() const { return len(); }
 
+    const std::vector<T>& items() const { return items_; }
+    std::size_t index() const { return index_; }
+    std::size_t end() const { return end_; }
+    std::shared_ptr<ProgressBar> progress_bar() const { return progress_; }
+    void consume_all() { index_ = end_; }
+
     ProgressBarIter& with_style(ProgressStyle style) {
         if (progress_) progress_->set_style(std::move(style));
         return *this;
@@ -174,6 +184,48 @@ ProgressBarIter<T> progress_with_style(std::vector<T> items, ProgressStyle style
     auto pb = ProgressBar::make(static_cast<std::uint64_t>(items.size()));
     pb->set_style(std::move(style));
     return ProgressBarIter<T>(std::move(items), std::move(pb));
+}
+
+template <typename T, typename F>
+auto map_parallel(ProgressBarIter<T>& iter, unsigned workers, F&& func)
+    -> std::vector<std::invoke_result_t<F, const T&>> {
+    using Result = std::invoke_result_t<F, const T&>;
+    if (workers == 0) workers = 1;
+
+    const std::size_t begin = iter.index();
+    const std::size_t end = iter.end();
+    const std::size_t count = end > begin ? end - begin : 0;
+    if (count == 0) {
+        iter.consume_all();
+        return {};
+    }
+
+    std::vector<std::optional<Result>> results(count);
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> threads;
+    threads.reserve(workers);
+    const auto& items = iter.items();
+    auto progress = iter.progress_bar();
+
+    for (unsigned worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&] {
+            while (true) {
+                const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+                if (i >= count) return;
+                if (progress) progress->inc(1);
+                results[i].emplace(func(items[begin + i]));
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    iter.consume_all();
+
+    std::vector<Result> out;
+    out.reserve(count);
+    for (auto& result : results) {
+        out.push_back(std::move(*result));
+    }
+    return out;
 }
 
 class ProgressReader {
