@@ -154,7 +154,7 @@ std::string human_float_count(double value, int precision) {
     if (std::isnan(value)) {
         text = "NaN";
     } else if (std::isinf(value)) {
-        text = value > 0 ? "+Inf" : "-Inf";
+        text = value > 0 ? "inf" : "-inf";
     } else {
         std::ostringstream out;
         out.imbue(std::locale::classic());

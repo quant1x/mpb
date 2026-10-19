@@ -223,8 +223,8 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(human_float_count(1234.5678), "1,234.5678")
         self.assertEqual(human_float_count(-100000, 0), "-100,000")
         self.assertEqual(human_float_count(-0.4, 0), "0")
-        self.assertEqual(human_float_count(float("inf")), "+,Inf")
-        self.assertEqual(human_float_count(float("-inf")), "-Inf")
+        self.assertEqual(human_float_count(float("inf")), "inf")
+        self.assertEqual(human_float_count(float("-inf")), "-inf")
         self.assertEqual(human_float_count(float("nan")), "NaN")
 
     def test_durations(self) -> None:

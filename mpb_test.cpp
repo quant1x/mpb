@@ -43,8 +43,10 @@ void test_format() {
             "human_duration alt");
     require(mpb::formatted_duration(std::chrono::seconds(3661)) == "01:01:01",
             "formatted_duration");
-    require(mpb::human_float_count(std::numeric_limits<double>::infinity()) == "+,Inf",
+    require(mpb::human_float_count(std::numeric_limits<double>::infinity()) == "inf",
             "inf formatting");
+    require(mpb::human_float_count(-std::numeric_limits<double>::infinity()) == "-inf",
+            "negative inf formatting");
 }
 
 void test_width_and_style() {

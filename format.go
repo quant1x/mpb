@@ -197,9 +197,19 @@ func (h HumanFloatCount) Format(s fmt.State, verb rune) {
 	if !ok {
 		prec = 4
 	}
-	// 使用指定精度格式化
-	fmtStr := "%.*f"
-	num := fmt.Sprintf(fmtStr, prec, float64(h))
+	// 使用指定精度格式化。Rust 的 `{:.*}` 对非有限值输出 `inf` / `-inf`，
+	// 而 Go 的 `%f` 输出 `+Inf` / `-Inf`，这里按 Rust 的写法对齐。
+	var num string
+	switch {
+	case math.IsNaN(float64(h)):
+		num = "NaN"
+	case math.IsInf(float64(h), 1):
+		num = "inf"
+	case math.IsInf(float64(h), -1):
+		num = "-inf"
+	default:
+		num = fmt.Sprintf("%.*f", prec, float64(h))
+	}
 	intPart := num
 	fracPart := ""
 	if idx := strings.IndexByte(num, '.'); idx >= 0 {
