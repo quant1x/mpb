@@ -345,6 +345,29 @@ C++ API 使用 `snake_case` 方法（`inc` / `set_style` / `finish_with_message`
 时间参数与返回值使用 `std::chrono::nanoseconds`，Bar 共享状态用 `std::shared_ptr`，
 `MultiState` 成员用 `std::weak_ptr` 恢复 Rust 的 Drop/僵尸语义。
 
+
+## Zig 版本
+
+Zig 实现使用 **Zig 0.17.0**，源文件在根目录与 Go/Python/C++ 并排：
+
+| 文件 | 内容 |
+|---|---|
+| `mpb.zig` | 入口；宽度、模板/样式、节流、单条进度条、真实终端/内存终端 |
+| `unicode_width.zig` | 由 Rust `unicode-width` 0.2.2 生成的宽度表 |
+| `build.zig` / `build.zig.zon` | 构建入口 |
+| `examples/main.zig` / `examples/single.zig` | 当前示例入口（支持 `single`） |
+
+当前里程碑覆盖：Rust 宽度表、模板解析与基础 ANSI 样式、20Hz 帧节流、单条进度条、
+`std.Io.File` 真实终端（Windows/POSIX）与 `InMemoryTerm` 测试终端。
+
+```bash
+zig build test          # mpb.zig 内置测试
+zig build
+zig build run -- single
+```
+
+MultiProgress、完整的 17 个 Zig 示例与剩余模板 key 还在继续移植中。
+
 ## Python 版本
 
 Python 实现与 Go/C++ 实现**同目录并排**存放（与 `mopr` 的组织方式一致）：仓库根目录的

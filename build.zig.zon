@@ -1,0 +1,13 @@
+.{
+    .name = .mpb,
+    .version = "0.1.5",
+    .fingerprint = 0x33cdf8e3197da166,
+    .minimum_zig_version = "0.17.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "mpb.zig",
+        "unicode_width.zig",
+        "examples",
+    },
+}

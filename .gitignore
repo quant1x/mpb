@@ -46,3 +46,7 @@ build-*/
 CMakeFiles/
 CMakeCache.txt
 __cmake_systeminformation/
+
+# Zig
+.zig-cache/
+zig-out/
