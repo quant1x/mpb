@@ -28,7 +28,7 @@ func New(length uint64) *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(&length, NewStderrDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeakState(pb.state)
+	pb.state.weakID()
 	return pb
 }
 
@@ -37,7 +37,7 @@ func NoLength() *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(nil, NewStderrDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeakState(pb.state)
+	pb.state.weakID()
 	return pb
 }
 
@@ -46,7 +46,7 @@ func Hidden() *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(nil, NewHiddenDrawTarget(), pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeakState(pb.state)
+	pb.state.weakID()
 	return pb
 }
 
@@ -55,7 +55,7 @@ func NewWithDrawTarget(length *uint64, dt ProgressDrawTarget) *ProgressBar {
 	pos := NewAtomicPosition()
 	s := NewBarState(length, dt, pos)
 	pb := &ProgressBar{state: NewSafeBarState(s), pos: pos}
-	registerWeakState(pb.state)
+	pb.state.weakID()
 	return pb
 }
 
@@ -265,14 +265,14 @@ type WeakProgressBar struct{ id uint64 }
 
 func NewWeakProgressBar() WeakProgressBar { return WeakProgressBar{id: 0} }
 func (p *ProgressBar) Downgrade() WeakProgressBar {
-	return WeakProgressBar{id: registerWeakState(p.state)}
+	return WeakProgressBar{id: p.state.weakID()}
 }
 func (w WeakProgressBar) Upgrade() *ProgressBar { return getWeak(w.id) }
 
 // Clone 返回一个对相同内部状态与位置的浅拷贝，语义类似 Rust 的 Arc::clone。
 func (p *ProgressBar) Clone() *ProgressBar {
 	nb := &ProgressBar{state: p.state, pos: p.pos}
-	registerWeakState(nb.state)
+	nb.state.weakID()
 	return nb
 }
 

@@ -192,7 +192,10 @@ func (b *BarState) Index() (uint, bool) {
 				continue
 			}
 			m := md.ms.members[idx]
-			if m.sb != nil && m.sb.inner == b {
+			if m.sbID == 0 {
+				continue
+			}
+			if other := getWeak(m.sbID); other != nil && other.state != nil && other.state.inner == b {
 				return idx, true
 			}
 		}
@@ -936,6 +939,19 @@ type SafeBarState struct {
 	mu     sync.Mutex
 	inner  *BarState
 	ticker *tickerSlot
+
+	weakIDOnce  sync.Once
+	weakIDValue uint64
+}
+
+// weakID returns the stable id of this state in the weak registry, installing
+// the finalizer (Drop emulation) on first use. Keeping a single id per state
+// is important: MultiStateMember only stores this id, never a strong pointer.
+func (s *SafeBarState) weakID() uint64 {
+	s.weakIDOnce.Do(func() {
+		s.weakIDValue = registerWeakState(s)
+	})
+	return s.weakIDValue
 }
 
 func NewSafeBarState(b *BarState) *SafeBarState { return &SafeBarState{inner: b} }

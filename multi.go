@@ -149,11 +149,14 @@ func remoteTargetOf(pb *ProgressBar) (*RemoteStub, uint, bool) {
 }
 
 func (mp *MultiProgress) internalize(loc InsertLocation, pos uint, pb *ProgressBar) *ProgressBar {
+	// Install/refresh the weak-registry id before taking the multi lock; the
+	// member only stores this number, so it never keeps BarState alive.
+	sbID := pb.state.weakID()
 	mp.State.mu.Lock()
 	idx := mp.State.insertWithPos(loc, pos)
-	// register this ProgressBar's SafeBarState in members
+	// register this ProgressBar's weak id in members
 	if idx < uint(len(mp.State.members)) {
-		mp.State.members[idx].sb = pb.state
+		mp.State.members[idx].sbID = sbID
 	}
 	// Rust：`drop(state)` —— 先放开 multi 的写锁，再去动进度条自己的绘制目标，
 	// 否则锁顺序（multi → bar）与别处（bar → multi）相反。
@@ -341,7 +344,10 @@ func NewMultiState(dt ProgressDrawTarget) *MultiState {
 //	draw_state: Option<DrawState>  —— 成员上一次绘制留下的行
 //	is_zombie: bool                —— 对应的 ProgressBar（准确说是 BarState）是否已"死亡"
 type MultiStateMember struct {
-	sb *SafeBarState
+	// sbID is the weak-registry id of the owning SafeBarState, or 0 when the
+	// slot is free. It must stay a plain number: a strong *SafeBarState here
+	// would prevent the finalizer from emulating Rust's `Drop for BarState`.
+	sbID uint64
 	// drawState 对应 Rust 的 `member.draw_state`：成员上次绘制产出的行。
 	// 未绘制过、或槽位已被 remove_idx 回收时为 nil（Rust 的 `None`）。
 	//
