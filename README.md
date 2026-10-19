@@ -1,12 +1,12 @@
 # mpb
 
 `github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的
-Go / Python / C++ 三语言移植。三个实现都按模块逐一对照上游（`style` / `state` /
+Go / Python / C++ / Zig 四语言移植。四个实现都按模块逐一对照上游（`style` / `state` /
 `draw_target` / `multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），
 目标是与 Rust 0.18.6 **逐语义对齐**：同样的模板语法、同样的宽度与换行度量、
 同样的节流刷新、多进度条/树形嵌套、清除与僵尸行（zombie）算法。
-Python 与 C++ 版本均已完成对齐；Python 代码与 Go 并排放在仓库根目录（组织方式同 `mopr`），
-C++ 代码以 `.h` / `.cpp` 与它们同目录并排，`pyproject.toml` / `CMakeLists.txt` 也在根目录。
+Python、C++ 与 Zig 版本均已完成对齐；Python 代码与 Go 并排放在仓库根目录（组织方式同 `mopr`），
+C++ 代码以 `.h` / `.cpp` 与它们同目录并排，Zig 代码为同目录的 `*.zig`，`pyproject.toml` / `CMakeLists.txt` / `build.zig` 也在根目录。
 
 ## 来源
 
@@ -33,24 +33,25 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 ## 模块对照
 
-| Rust（上游） | Go | Python | C++ | 内容 |
-|---|---|---|---|---|
-| `style.rs` | `style.go` | `style.py` | `style.h` / `style.cpp` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
-| `state.rs` | `state.go` | `state.py` | `state.h` / `state.cpp` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
-| `draw_target.rs` | `draw_target.go` | `draw_target.py` | `draw_target.h` / `draw_target.cpp` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
-| `multi.rs` | `multi.go` | `multi.py` | `multi.h` / `multi.cpp` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
-| `progress_bar.rs` | `progress_bar.go` | `progress_bar.py` | `progress_bar.h` / `progress_bar.cpp` | `ProgressBar` 门面 |
-| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | `iter.py` | `iter.h` | 迭代器包装 |
-| `format.rs` | `format.go` | `format.py` | `format.h` / `format.cpp` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
-| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` | `in_memory.h` / `in_memory.cpp`、`term_like.h` / `term_like.cpp` | 内存终端（测试用）与终端抽象 |
-| `lib.rs` | `doc.go` | `__init__.py` | `mpb.h` | 包文档与入口 |
+| Rust（上游） | Go | Python | C++ | Zig | 内容 |
+|---|---|---|---|---|---|
+| `style.rs` | `style.go` | `style.py` | `style.h` / `style.cpp` | `style.zig` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
+| `state.rs` | `state.go` | `state.py` | `state.h` / `state.cpp` | `state.zig` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
+| `draw_target.rs` | `draw_target.go` | `draw_target.py` | `draw_target.h` / `draw_target.cpp` | `draw_target.zig` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
+| `multi.rs` | `multi.go` | `multi.py` | `multi.h` / `multi.cpp` | `multi.zig` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
+| `progress_bar.rs` | `progress_bar.go` | `progress_bar.py` | `progress_bar.h` / `progress_bar.cpp` | `progress_bar.zig` | `ProgressBar` 门面 |
+| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | `iter.py` | `iter.h` | — | 迭代器包装（Zig 待移植） |
+| `format.rs` | `format.go` | `format.py` | `format.h` / `format.cpp` | `format.zig` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
+| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` | `in_memory.h` / `in_memory.cpp`、`term_like.h` / `term_like.cpp` | `term_like.zig` | 内存终端（测试用）与终端抽象 |
+| `lib.rs` | `doc.go` | `__init__.py` | `mpb.h` | `mpb.zig` | 包文档与入口 |
 
 C++ 另有 `types.h`（共享枚举/时间类型）、`utf8.h`（UTF-8 编解码）、
 `unicode_width_tables.h`（Unicode 宽度区间表）；构建入口是根目录 `CMakeLists.txt`，
 版本号由 `git_tag_info.cmake` 从 git tag 获取（与 `mopr` 的做法一致）。
 
 Rust 的 `Drop for BarState` 由 Go 的 `weakref.go`、Python 的 `WeakProgressBar` +
-`BarState.__del__`、C++ 的 `std::weak_ptr` + `BarState` 析构函数对应实现。
+`BarState.__del__`、C++ 的 `std::weak_ptr` + `BarState` 析构函数、Zig 的引用计数 +
+`ProgressBar.deinit()` 对应实现。
 
 表中的 Go / Python / C++ 三列**同目录并排**存放：`style.go`、`style.py`、`style.h`、
 `style.cpp` 是同级文件，`examples/<name>.go`、`<name>.py`、`<name>.cpp` 也是同级文件。
@@ -348,25 +349,46 @@ C++ API 使用 `snake_case` 方法（`inc` / `set_style` / `finish_with_message`
 
 ## Zig 版本
 
-Zig 实现使用 **Zig 0.17.0**，源文件在根目录与 Go/Python/C++ 并排：
+Zig 实现使用 **Zig 0.17.0**，模块划分直接对应 Rust 源码（不是按其他语言版本改写）：
 
-| 文件 | 内容 |
-|---|---|
-| `mpb.zig` | 入口；宽度、模板/样式、节流、单条进度条、真实终端/内存终端 |
-| `unicode_width.zig` | 由 Rust `unicode-width` 0.2.2 生成的宽度表 |
-| `build.zig` / `build.zig.zon` | 构建入口 |
-| `examples/main.zig` / `examples/single.zig` | 当前示例入口（支持 `single`） |
+| Rust 源文件 | Zig 文件 | 内容 |
+|---|---|---|
+| `draw_target.rs` | `draw_target.zig` | `LineType`、`DrawState`、换行视觉行数、`RateLimiter`、`ProgressDrawTarget`、`Drawable` |
+| `multi.rs` | `multi.zig` | `MultiState`（槽位/`free_set`/`ordering`/orphan 行/僵尸行/对齐）、`MultiProgress` |
+| `progress_bar.rs` | `progress_bar.zig` | `ProgressBar` API、steady tick 线程、绘制目标切换 |
+| `state.rs` | `state.zig` | `AtomicPosition`、`Estimator`、`ProgressState`、`BarState`、`Status` |
+| `style.rs` | `style.zig` | 模板状态机、ANSI 样式解析、`format_state`、`format_bar`、补齐/截断 |
+| `format.rs` | `format.zig` | `HumanBytes` / `DecimalBytes` / `BinaryBytes` / `HumanDuration` / `HumanCount` |
+| `in_memory.rs` + `term_like.rs` | `term_like.zig` | `TermLike` 接口、真实终端 `StdTerm`、`InMemoryTerm` |
+| `unicode-width` crate | `width.zig` + `unicode_width.zig` | 宽度算法与由 `unicode-width 0.2.2` 生成的区间表 |
+| `lib.rs` | `mpb.zig` | 统一导出 |
 
-当前里程碑覆盖：Rust 宽度表、模板解析与基础 ANSI 样式、20Hz 帧节流、单条进度条、
-`std.Io.File` 真实终端（Windows/POSIX）与 `InMemoryTerm` 测试终端。
+已覆盖：模板全部 key（`bar`/`wide_bar`/`spinner`/`msg`/`wide_msg`/`prefix`/`pos`/`len`/
+`percent`/`bytes`/`elapsed`/`eta`/`per_sec`/`bytes_per_sec`/`duration` 及 `_precise` 变体）、
+`with_key` 自定义 key、20Hz 节流与 1ms 位置令牌桶、15 秒双指数平滑估算器、
+`MultiProgress` 的插入/删除/对齐/`println`/`clear`/`suspend`、orphan 行与僵尸行回收、
+`finish` / `finish_with_message` / `finish_and_clear` / `abandon` 等结束语义、
+真实终端（Windows `GET_SCREEN_BUFFER_INFO` / POSIX `TIOCGWINSZ`）与内存终端。
+
+Zig 没有隐式析构，`ProgressBar` 用引用计数模拟 `Arc<BarState>`：最后一个 `deinit()`
+执行 Rust `Drop for BarState` 的收尾（`finish_using_style` + `mark_zombie`）；
+`MultiState` 同样按引用计数在最后一个引用释放时销毁，因此进度条可以在
+`MultiProgress` 之后释放而不会悬空。
 
 ```bash
-zig build test          # mpb.zig 内置测试
-zig build
-zig build run -- single
+zig build test                      # 单元测试（含内存终端渲染、僵尸回收）
+zig build                           # 构建 mpb_examples
+zig build run -- single             # 17 个示例，参数为 Rust examples/ 中的名字
+zig build run -- multi_tree_ext -- --bottom-alignment
 ```
 
-MultiProgress、完整的 17 个 Zig 示例与剩余模板 key 还在继续移植中。
+17 个示例与 Rust `examples/` 同名：`single`、`fastbar`、`finebars`、`log`、`morebars`、
+`multi`、`multi_tree`、`multi_tree_ext`、`cargo`、`cargowrap`、`download`、
+`download_continued`、`download_speed`、`iterator`、`long_spinner`、`tokio`、`yarnish`。
+Rust 示例中的 `rand` 用确定性 LCG 替代；线程调度改为单线程交错（`finebars`、`multi`、
+`yarnish` 等），进度条行为不变。`cargowrap` 不能在示例里递归构建，改为回放构建输出流；
+`tokio` 用等价的 5ms 循环替代 async runtime。
+
 
 ## Python 版本
 

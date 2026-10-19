@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const mpb = @import("mpb");
+const u = @import("util.zig");
+const mpb = u.mpb;
 
 pub fn run(io: std.Io) !void {
-    var pb = mpb.ProgressBar.initStderr(1024);
+    var pb = mpb.ProgressBar.new(1024);
+    defer pb.deinit();
+
     for (0..1024) |_| {
-        try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(5), .awake);
+        u.sleepMs(io, 5);
         pb.inc(1);
     }
     pb.finishWithMessage("done");
