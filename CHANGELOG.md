@@ -3,6 +3,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-19
+### Changed
+- refactor[go]：examples/multi 改为独立目录
+- feat[python]：新增 Python 版本（模块与示例与 Go 对应）
+- fix[go]：ForceDraw 多进度条重复渲染并补齐 italic 样式
+- fix[python]：对齐 Go/Rust 的边界、样式与迭代器语义
+- chore：纳入 .githooks 新标准钩子
+- chore：设置 .githooks 脚本可执行位
+- chore：统一 .githooks 许可证头为 MIT
+- fix[go]：MultiState 成员改用弱引用，恢复 Drop/僵尸语义
+- fix[python]：MultiState 成员改用弱引用，恢复 Drop/僵尸语义
+- docs：说明 Python 版本已完成 Rust 语义对齐
+- docs：模块对照补充 Python 列
+- docs：模块对照去掉“本仓库”表述
+- feat[cpp]：新增与 Rust/Go/Python 对齐的 C++ 实现
+- feat[cpp]：补齐 map_parallel 并行迭代适配
+- fix[cpp]：宽度表改用 Rust unicode-width 0.2.2
+- docs[cpp]：注明宽度表来源与连字边界
+- feat[cpp]：补齐 17 个示例（与 Go/Python 同目录）
+- refactor[examples]：各语言扁平化为单一 main 入口，按名称分派
+- docs：修正扁平化示例入口说明
+- release version 0.1.6
+
 ## [0.1.5] - 2026-10-11
 ### Changed
 - fix[go]: 清理未引用的依赖
@@ -269,7 +292,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.5...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.6...HEAD
+[0.1.6]: https://gitee.com/quant1x/mpb/compare/v0.1.5...v0.1.6
 [0.1.5]: https://gitee.com/quant1x/mpb/compare/v0.1.4...v0.1.5
 [0.1.4]: https://gitee.com/quant1x/mpb/compare/v0.1.3...v0.1.4
 [0.1.3]: https://gitee.com/quant1x/mpb/compare/v0.1.2...v0.1.3
