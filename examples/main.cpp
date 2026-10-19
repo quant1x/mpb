@@ -54,7 +54,9 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const std::string name = argv[1];
+    // Accept both `multi-tree` (upstream name) and `multi_tree` (C++ file name).
+    std::string name = argv[1];
+    std::replace(name.begin(), name.end(), '_', '-');
     const int rest_argc = argc - 2;
     char** rest_argv = argv + 2;
 

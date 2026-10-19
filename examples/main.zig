@@ -31,15 +31,15 @@ const examples = [_][]const u8{
     "log",
     "morebars",
     "multi",
-    "multi_tree",
-    "multi_tree_ext",
+    "multi-tree",
+    "multi-tree-ext",
     "cargo",
     "cargowrap",
     "download",
-    "download_continued",
-    "download_speed",
+    "download-continued",
+    "download-speed",
     "iterator",
-    "long_spinner",
+    "long-spinner",
     "tokio",
     "yarnish",
 };
@@ -59,10 +59,16 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
 
-    const name = args.next() orelse {
+    const raw_name = args.next() orelse {
         usage();
         return;
     };
+    // Accept both `multi-tree` (upstream name) and `multi_tree` (file name).
+    var name_buf: [64]u8 = undefined;
+    const name = if (std.mem.indexOfScalar(u8, raw_name, '-') != null and raw_name.len <= name_buf.len) blk: {
+        for (raw_name, 0..) |c, i| name_buf[i] = if (c == '-') '_' else c;
+        break :blk name_buf[0..raw_name.len];
+    } else raw_name;
 
     var rest = std.ArrayList([]const u8).empty;
     defer rest.deinit(init.gpa);

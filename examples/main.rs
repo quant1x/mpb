@@ -30,15 +30,15 @@ const EXAMPLES: [&str; 17] = [
     "log",
     "morebars",
     "multi",
-    "multi_tree",
-    "multi_tree_ext",
+    "multi-tree",
+    "multi-tree-ext",
     "cargo",
     "cargowrap",
     "download",
-    "download_continued",
-    "download_speed",
+    "download-continued",
+    "download-speed",
     "iterator",
-    "long_spinner",
+    "long-spinner",
     "tokio",
     "yarnish",
 ];
@@ -58,6 +58,10 @@ fn main() {
         }
     };
     let rest: Vec<String> = args.collect();
+
+    // Rust's upstream example names use hyphens; accept the snake_case spelling
+    // used by the Rust module files as well.
+    let name = name.replace('-', "_");
 
     match name.as_str() {
         "single" => single::run(),

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 var exampleNames = []string{
@@ -31,7 +32,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	name := os.Args[1]
+	// Accept both `multi-tree` (upstream name) and `multi_tree` (Go file name).
+	name := strings.ReplaceAll(os.Args[1], "_", "-")
 	args := os.Args[2:]
 	switch name {
 	case "cargo":
