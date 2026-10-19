@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import gc
 import io
 import threading
 import time
 import unittest
+import weakref
 
 from mpb import (
     InMemoryTerm,
@@ -86,6 +88,22 @@ class MultiTests(unittest.TestCase):
         pb.inc(3)
         self.mp.clear()
         self.assertEqual(self.term.contents(), "")
+
+    def test_dropped_bar_becomes_zombie(self) -> None:
+        term = InMemoryTerm(10, 60)
+        mp = MultiProgress.with_draw_target(in_memory_draw_target(term))
+        pb = mp.add(ProgressBar(10))
+        pb.inc(3)
+        state_ref = weakref.ref(pb.state)
+        self.assertIn("3/10", term.contents())
+
+        del pb
+        gc.collect()
+
+        self.assertIsNone(state_ref())
+        self.assertEqual(term.contents(), "")
+        self.assertEqual(len(mp.state.ordering), 0)
+        self.assertEqual(len(mp.state), 0)
 
     def test_suspend(self) -> None:
         pb = self.mp.add(ProgressBar(10))

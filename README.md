@@ -351,15 +351,15 @@ stderr，重定向到文件/管道时整条进度条隐藏；要在测试里拿�
   重定向/非 TTY 时两者都隐藏进度条。
 - **锁**：Python 使用 `RLock`，`suspend` 回调内重入同一 bar/multi 不会死锁；Go/Rust 的
   Mutex 非重入，这是 Python 侧更宽松的行为。
-- **Drop/僵尸**：两版 `MultiStateMember` 都强引用 `BarState`（Rust 不持有强引用）。因此
-  一条仍挂在 `MultiProgress` 上的 bar 被丢弃时，Go/Python 都不会立即自动 finish/zombie；
-  需要显式 `finish()` / `abandon()` / `remove()`。独立 bar 的 Python `BarState.__del__`
-  会尽力模拟 Rust 的 Drop（finish + mark_zombie），时机不保证。
+- **回收机制**：两版 `MultiStateMember` 都只保存 `BarState` 的弱引用，最后一个
+  `ProgressBar` 被回收时按 `on_finish` 收尾并 `mark_zombie`（与 Rust 的 Drop 一致）。
+  Go 用 `runtime.SetFinalizer` + weak registry，Python 用 `weakref` + `BarState.__del__`；
+  具体回收时机由运行时决定，不保证在确定时刻发生。
 
 测试与示例（Python 测试沿用 `*_test.py` 命名，与 mopr 一致，用 pytest 收集）：
 
 ```bash
-python -m pytest                       # 64 个测试
+python -m pytest                       # 65 个测试
 python examples/single/main.py         # 17 个示例，与 Go 示例目录一一对应
 python examples/multi-tree/main.py
 ```

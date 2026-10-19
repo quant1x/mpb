@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Callable
@@ -46,7 +47,9 @@ class InsertLocation(IntEnum):
 
 @dataclass
 class MultiStateMember:
-    sb: BarState | None = None
+    # Keep only a weak reference to the owning BarState. A strong reference
+    # here would prevent BarState.__del__ (Rust's Drop emulation) from running.
+    sb: weakref.ReferenceType[BarState] | None = None
     draw_state: DrawState | None = None
     is_zombie: bool = False
 
@@ -112,10 +115,11 @@ class MultiProgress:
             self.state.remove_idx(idx)
 
     def _internalize(self, location: InsertLocation, pos: int, pb: Any) -> Any:
+        state_ref = weakref.ref(pb.state)
         with self.state.mu:
             idx = self.state.insert_with_pos(location, pos)
             if idx < len(self.state.members):
-                self.state.members[idx].sb = pb.state
+                self.state.members[idx].sb = state_ref
         pb.set_draw_target(RemoteDrawTarget(self.state, idx))
         return pb
 

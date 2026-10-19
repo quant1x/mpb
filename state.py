@@ -694,11 +694,12 @@ class BarState:
             ms = getattr(self.draw_target, "ms", None)
             if ms is not None:
                 with ms.mu:
-                    for ordering_index, member_index in enumerate(ms.ordering):
+                    for member_index in ms.ordering:
                         if member_index >= len(ms.members):
                             continue
                         member = ms.members[member_index]
-                        if member.sb is self:
+                        member_state = member.sb() if member.sb is not None else None
+                        if member_state is self:
                             return int(member_index), True
             return 0, False
 
