@@ -800,6 +800,8 @@ func parseDottedStyle(spec string) *dottedStyle {
 			d.attrBits |= attrBold
 		case "dim":
 			d.attrBits |= attrDim
+		case "italic":
+			d.attrBits |= attrItalic
 		case "underlined":
 			d.attrBits |= attrUnderlined
 		case "blink":

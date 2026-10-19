@@ -1051,43 +1051,19 @@ func (s *SafeBarState) Suspend(now time.Time, f func() interface{}) interface{} 
 	return inner.Suspend(now, f)
 }
 func (s *SafeBarState) Draw(force bool) error {
-	// Capture formatted origin lines under lock, then perform aggregated draw without holding lock
+	// 与 Rust 的 `BarState::draw` 一致：只格式化一次。之前这里把已经格式化好的
+	// bar 行当作 "origin lines" 传给 AggregateDrawOrigin，aggregateDraw 又格式化
+	// 一遍，导致 ForceDraw 在多进度条里把同一条 bar 画成两行。
 	s.mu.Lock()
-	var originLines []LineType
-	var originContents []string
-	if wptr := s.inner.drawTarget.Width(); wptr != nil {
-		if !s.inner.state.IsFinished() {
-			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr), s.inner.drawTarget.IsStderr())
-		}
-	}
+	inner := s.inner
 	s.mu.Unlock()
-
-	if agg, ok := s.inner.drawTarget.(interface {
-		AggregateDrawOrigin([]LineType, []string, *BarState, bool, time.Time) error
-	}); ok {
-		return agg.AggregateDrawOrigin(originLines, originContents, s.inner, force, time.Now())
-	}
-
-	return s.inner.draw(force)
+	return inner.draw(force)
 }
 func (s *SafeBarState) DrawWithNow(force bool, now time.Time) error {
 	s.mu.Lock()
-	var originLines []LineType
-	var originContents []string
-	if wptr := s.inner.drawTarget.Width(); wptr != nil {
-		if !s.inner.state.IsFinished() {
-			originLines, originContents = s.inner.style.FormatState(&s.inner.state, int(*wptr), s.inner.drawTarget.IsStderr())
-		}
-	}
+	inner := s.inner
 	s.mu.Unlock()
-
-	if agg, ok := s.inner.drawTarget.(interface {
-		AggregateDrawOrigin([]LineType, []string, *BarState, bool, time.Time) error
-	}); ok {
-		return agg.AggregateDrawOrigin(originLines, originContents, s.inner, force, now)
-	}
-
-	return s.inner.drawWithNow(force, now)
+	return inner.drawWithNow(force, now)
 }
 func (s *SafeBarState) Println(now time.Time, msg string) {
 	// 对应 Rust 的 ProgressBar::println：只把**消息行**写进成员自己的 draw_state，

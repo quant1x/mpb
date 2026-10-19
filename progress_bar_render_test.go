@@ -240,6 +240,27 @@ func TestAnsiSegmentsMatchesUpstreamDFA(t *testing.T) {
 	}
 }
 
+// TestForceDrawDoesNotDuplicateMultiLines 锁住 ForceDraw 只格式化一次：
+// 之前 SafeBarState.Draw 把已格式化的行当作 origin lines 再传一遍，
+// aggregateDraw 又格式化一次，多进度条里会画出两条相同的 bar。
+func TestForceDrawDoesNotDuplicateMultiLines(t *testing.T) {
+	term := NewInMemoryTerm(10, 60)
+	mp := WithDrawTarget(NewInMemoryDrawTarget(term))
+	pb := mp.Add(New(10))
+	defer pb.Abandon()
+
+	pb.Inc(3)
+	pb.ForceDraw()
+
+	lines := strings.Split(term.Contents(), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("ForceDraw 不应把同一条 bar 画成多行：%q", term.Contents())
+	}
+	if !strings.Contains(lines[0], "3/10") {
+		t.Fatalf("ForceDraw 后缺少计数器：%q", term.Contents())
+	}
+}
+
 // TestWideBarGivesWayForWideMessage 看**效果**：消息里的全角字符按 2 列让位（与 Rust 一致），
 // 而不是被 NFKC 归一成 1 列后少让一位。
 func TestWideBarGivesWayForWideMessage(t *testing.T) {
@@ -263,5 +284,15 @@ func TestWideBarGivesWayForWideMessage(t *testing.T) {
 	// 40 列 -（空格 1 列 + 全角消息 2 列）= 37
 	if bar != termWidth-3 {
 		t.Fatalf("全角消息应占 2 列，条应为 %d 个块字符，实际 %d，行=%q", termWidth-3, bar, line)
+	}
+}
+
+func TestItalicStyle(t *testing.T) {
+	s := &Style{Spec: "italic"}
+	if got, want := s.ApplyFor("x", false), "\x1b[3mx\x1b[0m"; got != want {
+		t.Fatalf("italic style = %q, want %q", got, want)
+	}
+	if got, want := s.ApplyFor("x", true), "\x1b[3mx\x1b[0m"; got != want {
+		t.Fatalf("italic style (stderr) = %q, want %q", got, want)
 	}
 }
