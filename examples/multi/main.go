@@ -1,6 +1,8 @@
 // Copyright (C) 2026 Quant1X <wangfengxy@sina.cn>
 // SPDX-License-Identifier: MIT
 
+// 对应上游 examples/multi.rs：MultiProgress 的并发更新与 Println；
+// 带 -capture 时把内存终端的纯文本帧写入 examples/multi_capture.out。
 package main
 
 import (

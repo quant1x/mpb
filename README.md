@@ -45,7 +45,7 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 ## 示例与效果
 
-16 个示例与上游 `examples/` 一一对应，动画用 [VHS](https://github.com/charmbracelet/vhs) 录制，
+16 个录屏示例与上游 `examples/` 一一对应，动画用 [VHS](https://github.com/charmbracelet/vhs) 录制，
 tape 文件与 GIF 同名，都在 `screenshots/`：
 
 批量重录用 `scripts/` 下的两个脚本（PowerShell 与 bash 各一份，行为一致；脚本自己会切到
@@ -266,5 +266,5 @@ go run ./examples/yarnish
 ```powershell
 go build ./...
 go test ./...
-go run ./examples -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
+go run ./examples/multi -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
 ```
