@@ -370,6 +370,12 @@ Zig 实现使用 **Zig 0.17.0**，模块划分直接对应 Rust 源码（不是�
 `finish` / `finish_with_message` / `finish_and_clear` / `abandon` 等结束语义、
 真实终端（Windows `GET_SCREEN_BUFFER_INFO` / POSIX `TIOCGWINSZ`）与内存终端。
 
+平台时序与 `mopr` 的 `sleep_for_microseconds` 采用同一套处理：Windows 用
+`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 可等待定时器做短休眠（实测 ~0.5ms，绕开默认
+15.6ms 定时器粒度；失败时回退到 `Io.sleep`），macOS/POSIX 用 `nanosleep` 的微秒级精度。
+自旋提示与 Rust `core::hint::spin_loop` 一致：x86 用 `pause`，arm64 用 `isb`；
+不用 arm64 的 `yield`（Apple Silicon 会对自旋线程激进节流，形成 convoy）。
+
 Zig 没有隐式析构，`ProgressBar` 用引用计数模拟 `Arc<BarState>`：最后一个 `deinit()`
 执行 Rust `Drop for BarState` 的收尾（`finish_using_style` + `mark_zombie`）；
 `MultiState` 同样按引用计数在最后一个引用释放时销毁，因此进度条可以在

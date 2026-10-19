@@ -18,11 +18,13 @@ pub fn restoreTimerResolution() void {
 pub const allocator = mpb.util.allocator;
 
 pub fn sleepMs(io: std.Io, ms: u64) void {
-    std.Io.sleep(io, .fromMilliseconds(@intCast(ms)), .awake) catch {};
+    _ = io;
+    mpb.util.sleepMicros(ms * std.time.us_per_ms);
 }
 
 pub fn sleepSecs(io: std.Io, seconds: u64) void {
-    std.Io.sleep(io, .fromMilliseconds(@intCast(seconds * 1000)), .awake) catch {};
+    _ = io;
+    mpb.util.sleepMicros(seconds * std.time.us_per_s);
 }
 
 var stdout_term: ?mpb.term_like.StdTerm = null;

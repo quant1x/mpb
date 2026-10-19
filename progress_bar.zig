@@ -357,7 +357,7 @@ const Ticker = struct {
         while (!self.stop.load(.monotonic)) {
             pb.state.tick(util.nowNs());
             if (pb.isFinished()) break;
-            std.Io.sleep(util.io, .fromNanoseconds(interval_ns), .awake) catch break;
+            util.sleepMicros(@intCast(@divTrunc(interval_ns, std.time.ns_per_us)));
         }
     }
 

@@ -14,6 +14,33 @@ const winmm = if (is_windows) struct {
     extern "winmm" fn timeEndPeriod(period: std.os.windows.UINT) callconv(.winapi) std.os.windows.UINT;
 } else struct {};
 
+const win_timer = if (is_windows) struct {
+    const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: std.os.windows.DWORD = 0x00000002;
+    const TIMER_ALL_ACCESS: std.os.windows.DWORD = 0x1F0003;
+    const INFINITE: std.os.windows.DWORD = 0xFFFFFFFF;
+
+    const LARGE_INTEGER = extern struct { QuadPart: i64 };
+
+    extern "kernel32" fn CreateWaitableTimerExW(
+        attributes: ?*anyopaque,
+        name: ?[*:0]const u16,
+        flags: std.os.windows.DWORD,
+        access: std.os.windows.DWORD,
+    ) callconv(.winapi) ?std.os.windows.HANDLE;
+
+    extern "kernel32" fn SetWaitableTimer(
+        timer: std.os.windows.HANDLE,
+        due: *const LARGE_INTEGER,
+        period: i32,
+        completion: ?*anyopaque,
+        arg: ?*anyopaque,
+        resume_state: std.os.windows.BOOL,
+    ) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD) callconv(.winapi) std.os.windows.DWORD;
+    extern "kernel32" fn CloseHandle(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+} else struct {};
+
 /// Windows' default timer granularity is ~15.6ms, so `sleep(3ms)` really
 /// sleeps ~16ms. Rust's runtime requests a 1ms resolution, which is why the
 /// same example feels much smoother there; mirror that around timed work.
@@ -23,6 +50,46 @@ pub fn beginTimerResolution() void {
 
 pub fn endTimerResolution() void {
     if (is_windows) _ = winmm.timeEndPeriod(1);
+}
+
+/// Short sleep with platform-appropriate precision.
+///
+/// Windows: `std.Io.sleep` / `Sleep` are bounded by the ~15.6ms system timer,
+/// so a 50µs backoff really lasts 15.6ms. Use a
+/// `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` waitable timer instead, which is the
+/// same approach as `mopr::base::sleep_for_microseconds` (measured 0.53ms for
+/// 50µs, matching Rust). The timer is created per call: reusing a handle would
+/// need thread-local storage and concurrent users would interfere; creation is
+/// ~14µs.
+///
+/// macOS/POSIX: `nanosleep` (used by `std.Io.sleep`) already has microsecond
+/// resolution, so there is no equivalent problem. Note that the spin hint also
+/// differs: x86 uses `pause`, arm64 must use `isb` — `std.atomic.spinLoopHint`
+/// already does this, while the aarch64 `yield` instruction is aggressively
+/// throttled on Apple Silicon and must not be used for backoff.
+pub fn sleepMicros(us: u64) void {
+    if (is_windows and winSleepMicros(us)) return;
+    const clamped = @min(us, 3600 * std.time.us_per_s);
+    std.Io.sleep(io, .fromNanoseconds(@intCast(clamped * std.time.ns_per_us)), .awake) catch {};
+}
+
+fn winSleepMicros(us: u64) bool {
+    if (us == 0) return true;
+
+    const timer = win_timer.CreateWaitableTimerExW(
+        null,
+        null,
+        win_timer.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        win_timer.TIMER_ALL_ACCESS,
+    ) orelse return false;
+    defer _ = win_timer.CloseHandle(timer);
+
+    const clamped = @min(us, 3600 * std.time.us_per_s);
+    // Negative means relative; the unit is 100ns.
+    var due = win_timer.LARGE_INTEGER{ .QuadPart = -@as(i64, @intCast(clamped * 10)) };
+    if (!win_timer.SetWaitableTimer(timer, &due, 0, null, null, .FALSE).toBool()) return false;
+    _ = win_timer.WaitForSingleObject(timer, win_timer.INFINITE);
+    return true;
 }
 
 pub const allocator = std.heap.smp_allocator;
