@@ -3,6 +3,65 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-19
+### Changed
+- feat[zig]：核心单条进度条、Rust 宽度表与构建入口
+- fix：HumanFloatCount 的非有限值按 Rust 输出 inf/-inf
+  Rust 的 {:.*} 对 f64 非有限值输出 inf / -inf / NaN；Go 的 %f 输出
+  +Inf / -Inf，Python/C++ 之前也照抄成 +Inf。以 Rust 为锚点统一。
+- feat[zig]：按 Rust 模块结构完成多进度条、完整模板 key 与 17 个示例
+  - 源码按 Rust 一一拆分：draw_target/multi/state/style/format/term_like/progress_bar，
+    不再以其他语言实现为参照。
+  - MultiProgress：members/free_set/ordering、orphan 行、僵尸行回收、Top/Bottom 对齐、
+    insert/insert_from_back/insert_before/insert_after/remove/println/clear/suspend。
+  - 模板 key 全量：bar/wide_bar/spinner/msg/wide_msg/prefix/pos/len/percent/
+    bytes/elapsed/eta/per_sec/bytes_per_sec/duration 及 _precise、human_*、decimal/binary 变体；
+    新增 with_key 自定义 key 与 console 风格解析（256 色/真彩色/属性）。
+  - 绘制：DrawState 视觉行数、宽字符换行、进度条只统计 bar 行高度、底部对齐补行、20Hz 节流。
+  - 生命周期：ProgressBar 引用计数模拟 Arc<BarState>，最后一个 deinit() 执行 Drop 语义；
+    MultiState 引用计数保证进度条晚于 MultiProgress 释放也安全。
+  - 每帧格式化使用固定缓冲 scratch，行文本在 DrawState 重置时释放。
+  - 17 个示例与 Rust examples/ 同名，统一由 examples/main.zig 按名称分派。
+- fix[zig]：Windows 控制台改用宽字符写入并启用 VT 处理
+  Windows 下 WriteFile 按控制台 OEM 代码页解释字节，UTF-8 的 █░ / ✔ / emoji
+  会被拆成 GBK 乱码（鈻戔枒），宽度随之算错，清行与光标上移失效，画面不断
+  堆叠。改为：
+
+  - 终端句柄通过 WriteConsoleW 写 UTF-16（UTF-8 先转换，失败时回退到字节写入，
+    兼容 mintty/MSYS pty）。
+  - 初始化终端时打开 ENABLE_VIRTUAL_TERMINAL_PROCESSING，使 \x1b[2K / \x1b[nA
+    真正生效。
+  - 示例的 stdout 也走 StdTerm，避免中文/emoji 输出乱码。
+
+  另加一条 MultiProgress 重绘回归测试：连续绘制后每帧只保留一份内容。
+- perf[zig]：恢复示例并发与 Windows 1ms 定时精度
+  刷新手感差的根因不在节流：
+
+  1. Windows 默认定时器精度约 15.6ms，Io.sleep(3ms) 实际睡 16ms，
+     yarnish 的依赖阶段从 4s 变成 19s。示例入口与 steady tick 线程现在
+     调用 timeBeginPeriod(1)，退出/结束时还原（对应 Rust runtime 的行为）。
+  2. 示例移植时把 Rust 的多线程改成了单线程顺序 sleep，各进度条互相等待：
+     - yarnish：每个包条一个线程（4 个并发），28s -> 12s；
+     - cargo：4 个 worker 线程共享 crate 队列，15s -> 5s；
+     - multi：pb3 与作业条各自后台线程，与主线程的总条并发推进。
+
+  节流本身（20Hz + MAX_BURST=20、位置 1ms 令牌桶）未改动，与 Rust 一致。
+- perf[zig]：短休眠改用高精度可等待定时器（对齐 mopr）
+  参考 mopr base/platform.cpp 的 sleep_for_microseconds 与 ringbuffer 的
+  退避说明：
+
+  - Windows：std.Io.sleep / Sleep 受默认 15.6ms 定时器粒度支配，50us 退避
+    实际停 15.6ms，而 Rust 约 0.55ms（相差 28 倍）。改用
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 可等待定时器（实测 ~0.53ms），
+    句柄按次创建（约 14us）；失败回退到 Io.sleep。
+  - macOS/POSIX：nanosleep 本身是微秒级，无需特殊处理。
+  - 自旋提示与 Rust core::hint::spin_loop 一致：x86 pause、arm64 isb；
+    不使用 arm64 yield（Apple Silicon 会激进节流自旋线程，形成 convoy）。
+    Zig 的 std.atomic.spinLoopHint 已按此实现。
+  - 示例与 steady tick 统一走 util.sleepMicros；timeBeginPeriod(1) 仅作为
+    高精度定时器不可用时的兜底。
+- release version 0.1.7
+
 ## [0.1.6] - 2026-10-19
 ### Changed
 - refactor[go]：examples/multi 改为独立目录
@@ -292,7 +351,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.6...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.7...HEAD
+[0.1.7]: https://gitee.com/quant1x/mpb/compare/v0.1.6...v0.1.7
 [0.1.6]: https://gitee.com/quant1x/mpb/compare/v0.1.5...v0.1.6
 [0.1.5]: https://gitee.com/quant1x/mpb/compare/v0.1.4...v0.1.5
 [0.1.4]: https://gitee.com/quant1x/mpb/compare/v0.1.3...v0.1.4
