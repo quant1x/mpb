@@ -1,12 +1,12 @@
 # mpb
 
 `github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的
-Go / Python 双语言移植。两个实现都按模块逐一对照上游（`style` / `state` / `draw_target` /
-`multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），目标是与 Rust 0.18.6
-**逐语义对齐**：同样的模板语法、同样的宽度与换行度量、同样的节流刷新、多进度条/树形嵌套、
-清除与僵尸行（zombie）算法。
-Python 版本已完成对齐，代码与 Go 并排放在仓库根目录（组织方式同 `mopr`），
-`pyproject.toml` 在根目录，包名为 `mpb`（下文「Python 版本」）。
+Go / Python / C++ 三语言移植。三个实现都按模块逐一对照上游（`style` / `state` /
+`draw_target` / `multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），
+目标是与 Rust 0.18.6 **逐语义对齐**：同样的模板语法、同样的宽度与换行度量、
+同样的节流刷新、多进度条/树形嵌套、清除与僵尸行（zombie）算法。
+Python 与 C++ 版本均已完成对齐；Python 代码与 Go 并排放在仓库根目录（组织方式同 `mopr`），
+C++ 代码以 `.h` / `.cpp` 与它们同目录并排，`pyproject.toml` / `CMakeLists.txt` 也在根目录。
 
 ## 来源
 
@@ -33,23 +33,28 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 ## 模块对照
 
-| Rust（上游） | Go | Python | 内容 |
-|---|---|---|---|
-| `style.rs` | `style.go` | `style.py` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
-| `state.rs` | `state.go` | `state.py` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
-| `draw_target.rs` | `draw_target.go` | `draw_target.py` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
-| `multi.rs` | `multi.go` | `multi.py` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
-| `progress_bar.rs` | `progress_bar.go` | `progress_bar.py` | `ProgressBar` 门面 |
-| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | `iter.py` | 迭代器包装；Python 的 `map_parallel` 也在 `iter.py` |
-| `format.rs` | `format.go` | `format.py` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
-| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` | 内存终端（测试用）与终端抽象 |
-| `lib.rs` | `doc.go` | `__init__.py` | 包文档与入口 |
+| Rust（上游） | Go | Python | C++ | 内容 |
+|---|---|---|---|---|
+| `style.rs` | `style.go` | `style.py` | `style.h` / `style.cpp` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
+| `state.rs` | `state.go` | `state.py` | `state.h` / `state.cpp` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
+| `draw_target.rs` | `draw_target.go` | `draw_target.py` | `draw_target.h` / `draw_target.cpp` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
+| `multi.rs` | `multi.go` | `multi.py` | `multi.h` / `multi.cpp` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
+| `progress_bar.rs` | `progress_bar.go` | `progress_bar.py` | `progress_bar.h` / `progress_bar.cpp` | `ProgressBar` 门面 |
+| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | `iter.py` | `iter.h` | 迭代器包装 |
+| `format.rs` | `format.go` | `format.py` | `format.h` / `format.cpp` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
+| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` | `in_memory.h` / `in_memory.cpp`、`term_like.h` / `term_like.cpp` | 内存终端（测试用）与终端抽象 |
+| `lib.rs` | `doc.go` | `__init__.py` | `mpb.h` | 包文档与入口 |
+
+C++ 另有 `types.h`（共享枚举/时间类型）、`utf8.h`（UTF-8 编解码）、
+`unicode_width_tables.h`（Unicode 宽度区间表）；构建入口是根目录 `CMakeLists.txt`，
+版本号由 `git_tag_info.cmake` 从 git tag 获取（与 `mopr` 的做法一致）。
 
 Rust 的 `Drop for BarState` 由 Go 的 `weakref.go`、Python 的 `WeakProgressBar` +
-`BarState.__del__` 对应实现（弱引用 + 收尾/僵尸行）。
+`BarState.__del__`、C++ 的 `std::weak_ptr` + `BarState` 析构函数对应实现。
 
-表中的 Go 与 Python 两列**同目录并排**存放：`style.go` 与 `style.py` 是同级文件，
-`examples/<name>/main.go` 与 `main.py` 也是同级文件。上游源码见上面的本地副本路径。
+表中的 Go / Python / C++ 三列**同目录并排**存放：`style.go`、`style.py`、`style.h`、
+`style.cpp` 是同级文件，`examples/<name>/main.go` 与 `main.py` 也是同级文件。
+上游源码见上面的本地副本路径。
 
 ## 示例与效果
 
@@ -264,12 +269,13 @@ go run ./examples/yarnish
 
 ## 与上游的有意差异
 
-- **宽度开关**：Rust 的 `Width::set_default_cjk(bool)` 在 Go 侧是 `DefaultWidth.SetDefaultCJK(bool)`
-  （底层是 go-runewidth 的 `EastAsianWidth` 条件）。
+- **宽度开关**：Rust 的 `Width::set_default_cjk(bool)` 在 Go 侧是
+  `DefaultWidth.SetDefaultCJK(bool)`，Python 是 `mpb.DEFAULT_WIDTH.set_default_cjk(bool)`，
+  C++ 是 `mpb::Width::set_default_cjk(bool)`。
 - `MultiProgress` 的 `State` 字段已导出（对应 Rust 0.18.6 的 `pub state`）；访问前要先加
   `MultiState` 自带的 `RWMutex`（等价于 Rust 的 `read()` / `write()`）。
 
-## 构建与验证
+## Go 构建与验证
 
 ```powershell
 go build ./...
@@ -277,10 +283,58 @@ go test ./...
 go run ./examples/multi -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
 ```
 
+## C++ 版本
+
+C++ 实现与 Go/Python **同目录并排**：`style.h` / `style.cpp` 与 `style.go` / `style.py`
+同级，入口头文件是 `mpb.h`，构建入口是根目录 `CMakeLists.txt`。运行时不依赖第三方库，
+要求 C++20；版本号由 `git_tag_info.cmake` 从 git tag 读取（与 `mopr` 的做法一致）。
+
+**C++ 版本已实现与 Rust `indicatif 0.18.6` 的语义对齐**，覆盖模板/样式/ANSI、宽度与换行
+度量、20Hz 节流与令牌桶、估算器、单/多进度条、树形嵌套、`println` / `clear` / `suspend`、
+`u64` 边界、Drop/僵尸行与内存终端。
+
+```cpp
+#include "mpb.h"
+
+int main() {
+    auto pb = mpb::ProgressBar::make(1024);
+    pb->set_style(mpb::progress_style_with_template("{wide_bar} {pos}/{len}"));
+    for (int i = 0; i < 1024; ++i) {
+        pb->inc();
+    }
+    pb->finish_with_message("done");
+}
+```
+
+构建与测试：
+
+```bash
+# Linux / macOS（GCC / Clang）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+```powershell
+# Windows（MSVC）
+cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64
+cmake --build build-msvc --config Release -j
+ctest --test-dir build-msvc -C Release --output-on-failure
+```
+
+非 git 源码树可用 `-DMPB_VERSION_OVERRIDE=0.1.5` 显式指定版本号。
+
+本地验证：GCC 15（MinGW）、Clang 23、MSVC 19.44 均构建通过，`mpb_tests` 全部通过
+（格式、模板/ANSI、宽条、MultiProgress、Drop/僵尸、迭代器、节流器、内存终端）。
+
+C++ API 使用 `snake_case` 方法（`inc` / `set_style` / `finish_with_message`），
+时间参数与返回值使用 `std::chrono::nanoseconds`，Bar 共享状态用 `std::shared_ptr`，
+`MultiState` 成员用 `std::weak_ptr` 恢复 Rust 的 Drop/僵尸语义。
+
 ## Python 版本
 
-Python 实现与 Go 实现**同目录并排**存放（与 `mopr` 的组织方式一致）：仓库根目录的
-`*.py` 与同名 `*.go` 一一对应，`pyproject.toml` 也在根目录，包名即 `mpb`。
+Python 实现与 Go/C++ 实现**同目录并排**存放（与 `mopr` 的组织方式一致）：仓库根目录的
+`*.py` 与同名 `*.go` / `*.h` / `*.cpp` 一一对应，`pyproject.toml` 也在根目录，包名即 `mpb`。
 无第三方运行时依赖（Python ≥ 3.10）。
 
 **Python 版本已实现与 Rust `indicatif 0.18.6`（commit `3adb05c`）的语义对齐**，覆盖

@@ -39,3 +39,10 @@ dist/
 _version.py
 .pytest_cache/
 .coverage
+
+# CMake
+.build-*/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+__cmake_systeminformation/
