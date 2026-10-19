@@ -33,26 +33,49 @@ pub fn run(io: std.Io) !void {
     mp.println("starting!");
 
     // The Rust example drives pb3 from its own thread; here the 1024 steps are
-    // interleaved with the 200 job increments.
-    var i: u64 = 0;
-    while (i < 1024) : (i += 1) {
-        u.sleepMs(io, 2);
-        const message = std.fmt.allocPrint(u.allocator, "item #{d}", .{i + 1}) catch "";
-        pb3.setMessage(message);
-        pb3.inc(1);
-    }
-    mp.println("pb3 is done!");
-    pb3.finishWithMessage("done");
+    // The Rust example drives pb3 and the individual jobs from separate
+    // threads; keep that concurrency so all three bars move together.
+    var pb3_thread = try std.Thread.spawn(.{}, pb3Worker, .{ io, &mp, pb3.clone() });
+    var jobs_thread = try std.Thread.spawn(.{}, jobsWorker, .{ io, pb2.clone() });
 
-    i = 0;
+    var i: u64 = 0;
     while (i < n) : (i += 1) {
         u.sleepMs(io, 15);
         if (i == n / 3) u.sleepSecs(io, 2);
         pb.inc(1);
-        if (i % 2 == 0) pb2.inc(1);
     }
     pb.finishWithMessage("all jobs started");
 
-    pb2.finishWithMessage("all jobs done");
+    pb3_thread.join();
+    jobs_thread.join();
     mp.clear();
+}
+
+fn pb3Worker(io: std.Io, mp: *mpb.MultiProgress, handle: mpb.ProgressBar) void {
+    var bar = handle;
+    defer bar.deinit();
+
+    var i: u64 = 0;
+    while (i < 1024) : (i += 1) {
+        u.sleepMs(io, 2);
+        const message = std.fmt.allocPrint(u.allocator, "item #{d}", .{i + 1}) catch "";
+        bar.setMessage(message);
+        bar.inc(1);
+    }
+    mp.println("pb3 is done!");
+    bar.finishWithMessage("done");
+}
+
+fn jobsWorker(io: std.Io, handle: mpb.ProgressBar) void {
+    var bar = handle;
+    defer bar.deinit();
+
+    // The Rust version spawns one thread per job (each finishing after 1-5s);
+    // spreading 200 increments over five seconds gives the same picture.
+    var i: u64 = 0;
+    while (i < 200) : (i += 1) {
+        u.sleepMs(io, 25);
+        bar.inc(1);
+    }
+    bar.finishWithMessage("all jobs done");
 }

@@ -351,6 +351,8 @@ const Ticker = struct {
 
     fn run(self: *Ticker, pb: ProgressBar, interval_ns: i96) void {
         defer pb.state.release();
+        util.beginTimerResolution();
+        defer util.endTimerResolution();
 
         while (!self.stop.load(.monotonic)) {
             pb.state.tick(util.nowNs());

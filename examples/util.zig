@@ -7,6 +7,14 @@
 const std = @import("std");
 pub const mpb = @import("mpb");
 
+pub fn raiseTimerResolution() void {
+    mpb.util.beginTimerResolution();
+}
+
+pub fn restoreTimerResolution() void {
+    mpb.util.endTimerResolution();
+}
+
 pub const allocator = mpb.util.allocator;
 
 pub fn sleepMs(io: std.Io, ms: u64) void {

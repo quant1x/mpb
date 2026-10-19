@@ -57,35 +57,69 @@ pub fn run(io: std.Io) !void {
     pb.setStyle(style);
     pb.setPrefix("Building");
 
-    var processing: [NUM_CPUS]?usize = .{ null, null, null, null };
-    var rng = u.Rng.init(0xC0FFEE);
+    var shared = Shared{ .rng = u.Rng.init(0xC0FFEE) };
 
-    for (CRATES, 0..) |krate, i| {
-        const slot = i % NUM_CPUS;
-        processing[slot] = i;
-
-        var message = std.ArrayList(u8).empty;
-        for (processing) |maybe| {
-            if (maybe) |index| {
-                if (message.items.len > 0) message.appendSlice(u.allocator, ", ") catch {};
-                message.appendSlice(u.allocator, CRATES[index].name) catch {};
-            }
-        }
-        pb.setMessage(message.items);
-
-        const compiling = mpb.style.applyStyle("Compiling", "green.bold");
-        const line = std.fmt.allocPrint(u.allocator, "{s:>12} {s} {s}", .{
-            compiling, krate.name, krate.version,
-        }) catch "";
-        pb.println(line);
-
-        u.sleepMs(io, rng.range(250, 1000));
-        pb.inc(1);
+    // One worker per CPU, all pulling from the same crate list, like the Rust
+    // example's four threads.
+    var threads: [NUM_CPUS]std.Thread = undefined;
+    for (&threads, 0..) |*thread, slot| {
+        thread.* = try std.Thread.spawn(.{}, worker, .{ io, pb.clone(), &shared, slot });
     }
+    for (threads) |thread| thread.join();
+
     pb.finishAndClear();
 
     const finished = mpb.style.applyStyle("Finished", "green.bold");
     u.printFmt(io, "{s:>12} dev [unoptimized + debuginfo] target(s) in {s}", .{
         finished, mpb.format.humanDuration(u.allocator, mpb.util.nowNs() - start, false),
     });
+}
+
+const Shared = struct {
+    mutex: mpb.util.SpinLock = .{},
+    next: usize = 0,
+    processing: [NUM_CPUS]?usize = .{ null, null, null, null },
+    rng: u.Rng,
+};
+
+fn worker(io: std.Io, bar_handle: mpb.ProgressBar, shared: *Shared, slot: usize) void {
+    var bar = bar_handle;
+    defer bar.deinit();
+
+    while (true) {
+        shared.mutex.lock();
+        if (shared.next >= CRATES.len) {
+            shared.mutex.unlock();
+            break;
+        }
+        const index = shared.next;
+        shared.next += 1;
+        shared.processing[slot] = index;
+
+        var message = std.ArrayList(u8).empty;
+        for (shared.processing) |maybe| {
+            if (maybe) |current| {
+                if (message.items.len > 0) message.appendSlice(u.allocator, ", ") catch {};
+                message.appendSlice(u.allocator, CRATES[current].name) catch {};
+            }
+        }
+
+        // The last compile and link is always slow, mimic that.
+        const wait = if (index + 1 == CRATES.len)
+            shared.rng.range(1000, 2000)
+        else
+            shared.rng.range(250, 1000);
+        shared.mutex.unlock();
+
+        bar.setMessage(message.items);
+
+        const compiling = mpb.style.applyStyle("Compiling", "green.bold");
+        const line = std.fmt.allocPrint(u.allocator, "{s:>12} {s} {s}", .{
+            compiling, CRATES[index].name, CRATES[index].version,
+        }) catch "";
+        bar.println(line);
+
+        u.sleepMs(io, wait);
+        bar.inc(1);
+    }
 }

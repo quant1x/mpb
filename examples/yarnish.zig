@@ -70,21 +70,32 @@ pub fn run(io: std.Io) !void {
     }
 
     const counts = [_]u64{ bars[0].length().?, bars[1].length().?, bars[2].length().?, bars[3].length().? };
-    var step: u64 = 0;
-    const max_count = @max(@max(counts[0], counts[1]), @max(counts[2], counts[3]));
-    while (step < max_count) : (step += 1) {
-        for (&bars, 0..) |*bar, i| {
-            if (step >= counts[i]) continue;
-            const package = rng.pick(&PACKAGES);
-            const command = rng.pick(&COMMANDS);
-            u.sleepMs(io, rng.range(25, 200));
-            const message = std.fmt.allocPrint(u.allocator, "{s}: {s}", .{ package, command }) catch "";
-            bar.setMessage(message);
-            bar.inc(1);
-            if (bar.position() >= counts[i]) bar.finishWithMessage("waiting...");
-        }
+
+    // The Rust example runs one thread per package bar; keeping the same
+    // concurrency matters because each bar sleeps independently between ticks.
+    var threads: [bars.len]std.Thread = undefined;
+    for (&bars, 0..) |*bar, i| {
+        threads[i] = try std.Thread.spawn(.{}, packageWorker, .{ io, bar.clone(), counts[i], 0x1000 + i });
     }
+    for (threads) |thread| thread.join();
     mp.clear();
 
     u.printFmt(io, "✨ Done in {s}", .{mpb.format.humanDuration(u.allocator, mpb.util.nowNs() - started, false)});
+}
+
+fn packageWorker(io: std.Io, bar_handle: mpb.ProgressBar, count: u64, seed: u64) void {
+    var bar = bar_handle;
+    defer bar.deinit();
+
+    var rng = u.Rng.init(seed);
+    var step: u64 = 0;
+    while (step < count) : (step += 1) {
+        const package = rng.pick(&PACKAGES);
+        const command = rng.pick(&COMMANDS);
+        u.sleepMs(io, rng.range(25, 200));
+        const message = std.fmt.allocPrint(u.allocator, "{s}: {s}", .{ package, command }) catch "";
+        bar.setMessage(message);
+        bar.inc(1);
+    }
+    bar.finishWithMessage("waiting...");
 }

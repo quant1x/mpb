@@ -5,6 +5,25 @@
 //! spin lock (Zig 0.17 no longer ships `std.Thread.Mutex`).
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+const is_windows = builtin.os.tag == .windows;
+
+const winmm = if (is_windows) struct {
+    extern "winmm" fn timeBeginPeriod(period: std.os.windows.UINT) callconv(.winapi) std.os.windows.UINT;
+    extern "winmm" fn timeEndPeriod(period: std.os.windows.UINT) callconv(.winapi) std.os.windows.UINT;
+} else struct {};
+
+/// Windows' default timer granularity is ~15.6ms, so `sleep(3ms)` really
+/// sleeps ~16ms. Rust's runtime requests a 1ms resolution, which is why the
+/// same example feels much smoother there; mirror that around timed work.
+pub fn beginTimerResolution() void {
+    if (is_windows) _ = winmm.timeBeginPeriod(1);
+}
+
+pub fn endTimerResolution() void {
+    if (is_windows) _ = winmm.timeEndPeriod(1);
+}
 
 pub const allocator = std.heap.smp_allocator;
 pub const io = std.Io.Threaded.global_single_threaded.io();

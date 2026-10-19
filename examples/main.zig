@@ -52,6 +52,9 @@ fn usage() void {
 }
 
 pub fn main(init: std.process.Init) !void {
+    u.raiseTimerResolution();
+    defer u.restoreTimerResolution();
+
     var args = try init.minimal.args.iterateAllocator(init.gpa);
     defer args.deinit();
     _ = args.next();
