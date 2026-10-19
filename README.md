@@ -326,8 +326,20 @@ ctest --test-dir build-msvc -C Release --output-on-failure
 
 非 git 源码树可用 `-DMPB_VERSION_OVERRIDE=0.1.5` 显式指定版本号。
 
+17 个示例目录都同时有 `main.go`、`main.py`、`main.cpp`。CMake 为每个 `examples/<name>/main.cpp`
+生成 `mpb_example_<name>` 目标（连字符替换为下划线），例如：
+
+```bash
+cmake --build build --target mpb_example_single
+./build/mpb_example_single
+./build/mpb_example_multi --capture   # 输出 examples/multi_capture.out
+```
+
+不需要示例时用 `-DMPB_BUILD_EXAMPLES=OFF`。
+
 本地验证：GCC 15（MinGW）、Clang 23、MSVC 19.44 均构建通过，`mpb_tests` 全部通过
-（格式、模板/ANSI、宽条、MultiProgress、Drop/僵尸、迭代器、节流器、内存终端）。
+（格式、模板/ANSI、宽条、MultiProgress、Drop/僵尸、迭代器、节流器、内存终端）；17 个
+C++ 示例也在三套编译器下构建通过。
 
 C++ API 使用 `snake_case` 方法（`inc` / `set_style` / `finish_with_message`），
 时间参数与返回值使用 `std::chrono::nanoseconds`，Bar 共享状态用 `std::shared_ptr`，
@@ -423,7 +435,7 @@ python examples/single/main.py         # 17 个示例，与 Go 示例目录一�
 python examples/multi-tree/main.py
 ```
 
-每个 `examples/<name>/` 目录下同时有 `main.go` 与 `main.py`，例如
+每个 `examples/<name>/` 目录下同时有 `main.go`、`main.py` 与 `main.cpp`，例如
 `cargo`、`cargowrap`、`download`、`download-continued`、`download-speed`、
 `fastbar`、`finebars`、`iterator`、`log`、`long-spinner`、`morebars`、`multi`、
 `multi-tree`、`multi-tree-ext`、`single`、`tokio`、`yarnish`。

@@ -48,6 +48,25 @@ if (MPB_BUILD_TESTS)
     target_link_libraries(mpb_tests PRIVATE mpb)
     if (MSVC)
         target_compile_options(mpb_tests PRIVATE /utf-8)
+        target_compile_definitions(mpb_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif ()
     add_test(NAME mpb_tests COMMAND mpb_tests)
+endif ()
+
+option(MPB_BUILD_EXAMPLES "Build C++ examples" ON)
+if (MPB_BUILD_EXAMPLES)
+    set(MPB_EXAMPLES
+        cargo cargowrap download download-continued download-speed fastbar
+        finebars iterator log long-spinner morebars multi multi-tree
+        multi-tree-ext single tokio yarnish
+    )
+    foreach(example IN LISTS MPB_EXAMPLES)
+        string(REPLACE "-" "_" example_target "${example}")
+        add_executable(mpb_example_${example_target} examples/${example}/main.cpp)
+        target_link_libraries(mpb_example_${example_target} PRIVATE mpb)
+        if (MSVC)
+            target_compile_options(mpb_example_${example_target} PRIVATE /utf-8)
+            target_compile_definitions(mpb_example_${example_target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+        endif ()
+    endforeach()
 endif ()
