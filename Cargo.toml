@@ -1,6 +1,6 @@
 [package]
 name = "mpb"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 rust-version = "1.85"
 description = "Thin alias of indicatif so the quant1x/mpb language ports share one crate name"

@@ -3,6 +3,57 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-19
+### Changed
+- style[cpp]：clang-format 全量重排（不改变语义）
+  按仓库根目录 .clang-format（Google 基线 + 4 空格 + 120 列）重排全部手写 C++：
+
+  - 39 个 *.h / *.cpp / examples/*.cpp；unicode_width_tables.h 是生成文件，
+    保持原样，避免下次生成时被覆盖；
+  - include 分组与顺序、指针/引用对齐、构造初始化列表、长参数换行统一；
+  - 行尾统一为 LF（部分文件原为 CRLF）。
+
+  验证：MSVC Release 构建通过，mpb_tests 全部通过，mpb_examples 构建通过。
+- chore：忽略 clang-format 临时文件 *.tmp0
+  Windows 上 clang-format / clangd 偶尔会在源文件旁留下 .tmp0，属于工具进程
+  未释放的中间文件，不参与版本控制。
+- fix[cpp]：Windows 控制台 UTF-16 输出与高精度短休眠
+  与 Zig 版同一根因，两处 Windows 平台差异：
+
+  1. 控制台编码：std::ostream 走 WriteFile，按 OEM 代码页（中文系统 GBK）解释
+     UTF-8，█░ / ✔ / emoji 变成 鈻戔枒，补白与清行随之错位。StdTerm 在控制台
+     句柄上改用 WriteConsoleW（UTF-8 先转 UTF-16），并打开
+     ENABLE_VIRTUAL_TERMINAL_PROCESSING，让 \x1b[2K / \x1b[nA 生效。
+  2. 休眠精度：std::this_thread::sleep_for 受 15.6ms 定时器粒度支配。新增
+     platform.h / platform.cpp 的 mpb::sleep_for（CREATE_WAITABLE_TIMER_HIGH_RESOLUTION，
+     做法同 mopr::base::sleep_for_microseconds），17 个示例改用该入口；
+     mpb_examples single 从 15s+ 回到 5.6s。
+
+  另外 mpb_test.cpp 的迭代器用例改用 hidden 绘制目标，测试不再往终端画进度条。
+- fix[go/python/cpp]：补齐 Windows 控制台处理，完成四语言平台层检查
+  按 Zig 版发现的两类差异逐项核对：
+
+  Go
+  - StdTerm 在控制台句柄上改走 WriteConsoleW（UTF-8 -> UTF-16），并打开
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING；新增 console_windows.go / console_other.go。
+  - 示例入口调用 EnableConsoleUTF8()，把控制台输出代码页切到 UTF-8（退出还原），
+    修复 fmt.Print* 输出中文/✔/emoji 的乱码。
+  - time.Sleep 实测 3ms 请求约 3.2ms，无需高精度定时器。
+
+  Python
+  - 文本流本身走 _WindowsConsoleIO（UTF-16），无编码问题；缺的是 VT。
+    新增 enable_console()（ctypes），在 StdTerm 构造与 examples 入口调用。
+
+  C++
+  - 库内 StdTerm 已用 WriteConsoleW；示例的 std::cout 还走 WriteFile，
+    新增 ConsoleGuard（切 UTF-8 代码页 + 开 VT，析构还原），在 examples/main.cpp 使用。
+
+  Zig
+  - 复核：WriteConsoleW、VT、util.sleepMicros、终端尺寸查询均已就位，无需改动。
+
+  README 增加「平台层（Windows）」四点检查矩阵。
+- release version 0.1.10
+
 ## [0.1.9] - 2026-10-19
 ### Changed
 - fix[examples]：五个入口统一接受连字符与下划线两种示例名
@@ -414,7 +465,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.9...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.10...HEAD
+[0.1.10]: https://gitee.com/quant1x/mpb/compare/v0.1.9...v0.1.10
 [0.1.9]: https://gitee.com/quant1x/mpb/compare/v0.1.8...v0.1.9
 [0.1.8]: https://gitee.com/quant1x/mpb/compare/v0.1.7...v0.1.8
 [0.1.7]: https://gitee.com/quant1x/mpb/compare/v0.1.6...v0.1.7
