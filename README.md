@@ -326,7 +326,7 @@ ctest --test-dir build-msvc -C Release --output-on-failure
 
 非 git 源码树可用 `-DMPB_VERSION_OVERRIDE=0.1.5` 显式指定版本号。
 
-17 个示例都同时有 `examples/<name>.go`、`<name>.py`、`<name>.cpp`。所有 `main.cpp`
+17 个示例都同时有 `examples/<name>.go`、`<name>.py`、`<name>.cpp`。所有 `examples/*.cpp`
 编译进一个 `mpb_examples` 入口（参数是示例名），例如：
 
 ```bash
