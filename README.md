@@ -53,7 +53,7 @@ Rust 的 `Drop for BarState` 由 Go 的 `weakref.go`、Python 的 `WeakProgressB
 `BarState.__del__`、C++ 的 `std::weak_ptr` + `BarState` 析构函数对应实现。
 
 表中的 Go / Python / C++ 三列**同目录并排**存放：`style.go`、`style.py`、`style.h`、
-`style.cpp` 是同级文件，`examples/<name>/main.go` 与 `main.py` 也是同级文件。
+`style.cpp` 是同级文件，`examples/<name>.go`、`<name>.py`、`<name>.cpp` 也是同级文件。
 上游源码见上面的本地副本路径。
 
 ## 示例与效果
@@ -88,7 +88,7 @@ VHS=/path/to/vhs ./scripts/generate.sh
 主线程负责画进度条并打 `Compiling` 行。
 
 ```powershell
-go run ./examples/cargo
+go run ./examples cargo
 ```
 
 ![cargo](screenshots/cargo.gif)
@@ -100,7 +100,7 @@ go run ./examples/cargo
 空 crate 来跑（见 `screenshots/cargowrap.tape`）。
 
 ```powershell
-go run ./examples/cargowrap
+go run ./examples cargowrap
 ```
 
 ![cargowrap](screenshots/cargowrap.gif)
@@ -110,7 +110,7 @@ go run ./examples/cargowrap
 模拟下载进度，演示 `{bytes}/{total_bytes}` 与自定义 eta key（Rust 的 `with_key`）。
 
 ```powershell
-go run ./examples/download
+go run ./examples download
 ```
 
 ![download](screenshots/download.gif)
@@ -120,7 +120,7 @@ go run ./examples/download
 断点续传：起始位置不为 0，并调用 `ResetEta()` 让 ETA 从当前位置重新估算。
 
 ```powershell
-go run ./examples/download-continued
+go run ./examples download-continued
 ```
 
 ![download-continued](screenshots/download-continued.gif)
@@ -130,7 +130,7 @@ go run ./examples/download-continued
 在 `download` 的基础上多了 `{bytes_per_sec}`。
 
 ```powershell
-go run ./examples/download-speed
+go run ./examples download-speed
 ```
 
 ![download-speed](screenshots/download-speed.gif)
@@ -140,7 +140,7 @@ go run ./examples/download-speed
 极大量、每次更新都极快的场景，用来看限速（默认 20Hz）下的出帧率与 `Elapsed()` 的耗时统计。
 
 ```powershell
-go run ./examples/fastbar
+go run ./examples fastbar
 ```
 
 ![fastbar](screenshots/fastbar.gif)
@@ -151,7 +151,7 @@ go run ./examples/fastbar
 （Rust 用 `thread::spawn`，Go 用 goroutine）。
 
 ```powershell
-go run ./examples/finebars
+go run ./examples finebars
 ```
 
 ![finebars](screenshots/finebars.gif)
@@ -167,7 +167,7 @@ go run ./examples/finebars
 取完元素时迭代器会按样式里的完成行为收尾（默认 `FinishUsingStyle`）。
 
 ```powershell
-go run ./examples/iterator
+go run ./examples iterator
 ```
 
 ![iterator](screenshots/iterator.gif)
@@ -177,7 +177,7 @@ go run ./examples/iterator
 边推进边用 `Println` 打日志：日志行走 `MultiState` 的 orphan 行通道，不会把进度条画面冲乱。
 
 ```powershell
-go run ./examples/log
+go run ./examples log
 ```
 
 ![log](screenshots/log.gif)
@@ -188,7 +188,7 @@ steady tick + 自定义 spinner 帧（更多帧见
 [cli-spinners](https://github.com/sindresorhus/cli-spinners/blob/master/spinners.json)）。
 
 ```powershell
-go run ./examples/long-spinner
+go run ./examples long-spinner
 ```
 
 ![long-spinner](screenshots/long-spinner.gif)
@@ -198,7 +198,7 @@ go run ./examples/long-spinner
 `MultiProgress` 里一条总进度条统着多条子进度条。
 
 ```powershell
-go run ./examples/morebars
+go run ./examples morebars
 ```
 
 ![morebars](screenshots/morebars.gif)
@@ -209,7 +209,7 @@ go run ./examples/morebars
 最后把树按缩进打印出来做对照。
 
 ```powershell
-go run ./examples/multi-tree
+go run ./examples multi-tree
 ```
 
 ![multi-tree](screenshots/multi-tree.gif)
@@ -220,8 +220,8 @@ go run ./examples/multi-tree
 （要摘的都是 `temp_*`），并演示 `MultiProgress` 的垂直对齐 —— 加 `--bottom-alignment` 改成底部对齐。
 
 ```powershell
-go run ./examples/multi-tree-ext              # 录屏用的是这个
-go run ./examples/multi-tree-ext --bottom-alignment
+go run ./examples multi-tree-ext              # 录屏用的是这个
+go run ./examples multi-tree-ext --bottom-alignment
 ```
 
 ![multi-tree-ext](screenshots/multi-tree-ext.gif)
@@ -231,7 +231,7 @@ go run ./examples/multi-tree-ext --bottom-alignment
 最基础的单个进度条（1024 步 × 5ms，默认模板 `{wide_bar} {pos}/{len}`）。
 
 ```powershell
-go run ./examples/single
+go run ./examples single
 ```
 
 ![single](screenshots/single.gif)
@@ -242,7 +242,7 @@ go run ./examples/single
 （每 5ms 一个 tick，共 1024 步）。
 
 ```powershell
-go run ./examples/tokio
+go run ./examples tokio
 ```
 
 ![tokio](screenshots/tokio.gif)
@@ -252,7 +252,7 @@ go run ./examples/tokio
 模拟 yarn 安装时的四段式输出（解析 → 拉取 → 链接 → 构建），最后用 `HumanDuration` 报总耗时。
 
 ```powershell
-go run ./examples/yarnish
+go run ./examples yarnish
 ```
 
 ![yarnish](screenshots/yarnish.gif)
@@ -280,7 +280,7 @@ go run ./examples/yarnish
 ```powershell
 go build ./...
 go test ./...
-go run ./examples/multi -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
+go run ./examples multi -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
 ```
 
 ## C++ 版本
@@ -326,13 +326,13 @@ ctest --test-dir build-msvc -C Release --output-on-failure
 
 非 git 源码树可用 `-DMPB_VERSION_OVERRIDE=0.1.5` 显式指定版本号。
 
-17 个示例目录都同时有 `main.go`、`main.py`、`main.cpp`。CMake 为每个 `examples/<name>/main.cpp`
-生成 `mpb_example_<name>` 目标（连字符替换为下划线），例如：
+17 个示例都同时有 `examples/<name>.go`、`<name>.py`、`<name>.cpp`。所有 `main.cpp`
+编译进一个 `mpb_examples` 入口（参数是示例名），例如：
 
 ```bash
-cmake --build build --target mpb_example_single
-./build/mpb_example_single
-./build/mpb_example_multi --capture   # 输出 examples/multi_capture.out
+cmake --build build --target mpb_examples
+./build/mpb_examples single
+./build/mpb_examples multi --capture   # 输出 examples/multi_capture.out
 ```
 
 不需要示例时用 `-DMPB_BUILD_EXAMPLES=OFF`。
@@ -427,15 +427,18 @@ mp.println("start")
   Go 用 `runtime.SetFinalizer` + weak registry，Python 用 `weakref` + `BarState.__del__`；
   具体回收时机由运行时决定，不保证在确定时刻发生。
 
+Python 示例从包入口 `examples/__main__.py` 调用：使用 `python -m examples <name>`，
+不需要直接执行 `examples/main.py`（它只是内部 dispatcher）。
+
 测试与示例（Python 测试沿用 `*_test.py` 命名，与 mopr 一致，用 pytest 收集）：
 
 ```bash
 python -m pytest                       # 65 个测试
-python examples/single/main.py         # 17 个示例，与 Go 示例目录一一对应
-python examples/multi-tree/main.py
+python -m examples single         # 17 个示例，与 Go/C++ 示例一一对应
+python -m examples multi-tree
 ```
 
-每个 `examples/<name>/` 目录下同时有 `main.go`、`main.py` 与 `main.cpp`，例如
+每个示例在 `examples/` 下都有 `<name>.go`、`<name>.py` 与 `<name>.cpp`，例如
 `cargo`、`cargowrap`、`download`、`download-continued`、`download-speed`、
 `fastbar`、`finebars`、`iterator`、`log`、`long-spinner`、`morebars`、`multi`、
 `multi-tree`、`multi-tree-ext`、`single`、`tokio`、`yarnish`。

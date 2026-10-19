@@ -55,18 +55,30 @@ endif ()
 
 option(MPB_BUILD_EXAMPLES "Build C++ examples" ON)
 if (MPB_BUILD_EXAMPLES)
-    set(MPB_EXAMPLES
-        cargo cargowrap download download-continued download-speed fastbar
-        finebars iterator log long-spinner morebars multi multi-tree
-        multi-tree-ext single tokio yarnish
+    set(MPB_EXAMPLE_SOURCES
+        examples/main.cpp
+        examples/cargo.cpp
+        examples/cargowrap.cpp
+        examples/download.cpp
+        examples/download_continued.cpp
+        examples/download_speed.cpp
+        examples/fastbar.cpp
+        examples/finebars.cpp
+        examples/iterator.cpp
+        examples/log.cpp
+        examples/long_spinner.cpp
+        examples/morebars.cpp
+        examples/multi.cpp
+        examples/multi_tree.cpp
+        examples/multi_tree_ext.cpp
+        examples/single.cpp
+        examples/tokio.cpp
+        examples/yarnish.cpp
     )
-    foreach(example IN LISTS MPB_EXAMPLES)
-        string(REPLACE "-" "_" example_target "${example}")
-        add_executable(mpb_example_${example_target} examples/${example}/main.cpp)
-        target_link_libraries(mpb_example_${example_target} PRIVATE mpb)
-        if (MSVC)
-            target_compile_options(mpb_example_${example_target} PRIVATE /utf-8)
-            target_compile_definitions(mpb_example_${example_target} PRIVATE _CRT_SECURE_NO_WARNINGS)
-        endif ()
-    endforeach()
+    add_executable(mpb_examples ${MPB_EXAMPLE_SOURCES})
+    target_link_libraries(mpb_examples PRIVATE mpb)
+    if (MSVC)
+        target_compile_options(mpb_examples PRIVATE /utf-8)
+        target_compile_definitions(mpb_examples PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif ()
 endif ()
