@@ -54,3 +54,6 @@ zig-out/
 # Rust
 /target/
 Cargo.lock
+
+# clang-format / clangd temp files (Windows)
+*.tmp0
