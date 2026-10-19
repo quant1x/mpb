@@ -13,16 +13,16 @@ repository = "https://github.com/quant1x/mpb"
 name = "mpb"
 path = "lib.rs"
 
+# All of indicatif's optional integrations are enabled here so callers never
+# have to know about or spell out feature flags. The crate itself adds no code:
+# every public item is a re-export.
 [dependencies]
-indicatif = "0.18.6"
-
-# Every feature is forwarded to indicatif unchanged; this crate adds no code.
-[features]
-default = ["indicatif/default"]
-unicode-width = ["indicatif/unicode-width"]
-improved_unicode = ["indicatif/improved_unicode"]
-in_memory = ["indicatif/in_memory"]
-futures = ["indicatif/futures"]
-wasmbind = ["indicatif/wasmbind"]
-rayon = ["indicatif/rayon"]
-tokio = ["indicatif/tokio"]
+indicatif = { version = "0.18.6", features = [
+    "unicode-width",
+    "improved_unicode",
+    "in_memory",
+    "futures",
+    "rayon",
+    "tokio",
+    "wasmbind",
+] }

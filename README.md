@@ -279,18 +279,18 @@ go run ./examples yarnish
 
 ## Rust 版本
 
-Rust 侧不复制实现：根目录 `Cargo.toml` + `lib.rs` 定义同名 crate `mpb`，
-内容是 `pub use indicatif::*;`，版本与其余语言端口一致（`0.1.6`），feature 全部原样转发
-（`unicode-width` / `improved_unicode` / `in_memory` / `futures` / `rayon` / `tokio` / `wasmbind`）。
+Rust 侧不复制实现：根目录 `Cargo.toml` + `lib.rs` 定义同名 crate `mpb`，内容是
+`pub use indicatif::*;`，版本与其余语言端口一致（`0.1.7`）。indicatif 的可选集成
+（`in_memory` / `improved_unicode` / `futures` / `rayon` / `tokio`）在这里**全部默认打开**，
+调用方不需要记任何 feature 开关，也没有 `mpb` 自己的 feature 需要选择。
 
 ```toml
 [dependencies]
-mpb = "0.1.6"          # 语义等价于 indicatif 0.18.6
+mpb = "0.1.7"          # 语义等价于 indicatif 0.18.6（含全部可选集成）
 ```
 
 ```bash
 cargo test
-cargo test --features in_memory
 ```
 
 `mpb::ProgressBar` / `MultiProgress` / `ProgressStyle` / `Width` / `HumanBytes` 等全部是

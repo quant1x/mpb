@@ -50,6 +50,11 @@ mod tests {
         bar.set_style(style);
 
         assert_eq!(HumanBytes(1500).to_string(), "1.46 KiB");
+
+        // Optional integrations are always enabled, so these items exist too.
+        let term = InMemoryTerm::new(5, 40);
+        assert_eq!(term.contents(), "");
+
         assert!(!VERSION.is_empty());
     }
 }
