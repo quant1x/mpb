@@ -291,7 +291,8 @@ C++ 实现与 Go/Python **同目录并排**：`style.h` / `style.cpp` 与 `style
 
 **C++ 版本已实现与 Rust `indicatif 0.18.6` 的语义对齐**，覆盖模板/样式/ANSI、宽度与换行
 度量、20Hz 节流与令牌桶、估算器、单/多进度条、树形嵌套、`println` / `clear` / `suspend`、
-`u64` 边界、Drop/僵尸行与内存终端。
+`u64` 边界、Drop/僵尸行与内存终端。宽度表由 Rust `unicode-width` 0.2.2（indicatif 使用的
+同一版本）生成，包含 `width` / `width_cjk` 以及 emoji ZWJ、VS16、keycap 等序列规则。
 
 ```cpp
 #include "mpb.h"
@@ -398,8 +399,10 @@ mp.println("start")
   Python 内部是任意精度整数，因此在边界处显式取模/钳位，负数位置/增量直接抛 `ValueError`
   （Go 由 `uint64` 类型在编译期拒绝）。
 - **宽度表**：Python 用 `unicodedata` + 手写规则，Rust 用 `unicode-width` 0.2.2，
-  Go 用 `go-runewidth`。ASCII/Latin/CJK/emoji/方块/盲文等常用区间一致；约 4k 个
-  生僻/未分配码点（主要是组合记号与 Unicode 版本差异）可能有 0/1/2 列差异。
+  Go 用 `go-runewidth`，C++ 直接由 Rust `unicode-width` 0.2.2 生成
+  （`width` / `width_cjk` + emoji 序列规则）。Python/Go 与 Rust 在
+  ASCII/Latin/CJK/emoji/方块/盲文等常用区间一致；约 4k 个生僻/未分配码点
+  （主要是组合记号与 Unicode 版本差异）可能有 0/1/2 列差异。
 - **内存终端**：Python 的 `InMemoryTerm` 是 VT100 子集（CSI A/B/C/D/H/f/K/J、SGR 忽略），
   Go 用 `go-vte`；mpb 自身产生的序列两边一致。
 - **标准终端**：Python `StdTerm` 接收文本流（`str`），Go `io.Writer` 接收字节；

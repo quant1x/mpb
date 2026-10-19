@@ -27,7 +27,26 @@ namespace {
 std::atomic<bool> g_cjk_wide{false};
 
 template <std::size_t N>
-bool in_ranges(const unicode_width::Range (&ranges)[N], char32_t cp) {
+const unicode_width::Range* find_width_range(
+    const unicode_width::Range (&ranges)[N], char32_t cp) {
+    std::size_t lo = 0;
+    std::size_t hi = N;
+    while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        if (ranges[mid].last < cp) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo < N && ranges[lo].first <= cp && cp <= ranges[lo].last) {
+        return &ranges[lo];
+    }
+    return nullptr;
+}
+
+template <std::size_t N>
+bool in_bool_ranges(const unicode_width::BoolRange (&ranges)[N], char32_t cp) {
     std::size_t lo = 0;
     std::size_t hi = N;
     while (lo < hi) {
@@ -39,6 +58,30 @@ bool in_ranges(const unicode_width::Range (&ranges)[N], char32_t cp) {
         }
     }
     return lo < N && ranges[lo].first <= cp && cp <= ranges[lo].last;
+}
+
+bool is_regional_indicator(char32_t cp) {
+    return cp >= 0x1F1E6 && cp <= 0x1F1FF;
+}
+
+bool is_emoji_modifier(char32_t cp) {
+    return cp >= 0x1F3FB && cp <= 0x1F3FF;
+}
+
+bool is_keycap_base(char32_t cp) {
+    return (cp >= U'0' && cp <= U'9') || cp == U'#' || cp == U'*';
+}
+
+bool is_emoji_presentation(char32_t cp) {
+    return in_bool_ranges(unicode_width::kEmojiPresentation, cp);
+}
+
+bool is_emoji_modifier_base(char32_t cp) {
+    return in_bool_ranges(unicode_width::kEmojiModifierBase, cp);
+}
+
+bool is_text_presentation(char32_t cp) {
+    return in_bool_ranges(unicode_width::kTextPresentation, cp);
 }
 
 std::string repeat(std::string_view text, int count) {
@@ -470,17 +513,9 @@ const char* state_name(ParseState state) {
 void Width::set_default_cjk(bool is_cjk) { g_cjk_wide.store(is_cjk); }
 
 int char_width(char32_t cp, bool cjk) {
-    if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F)) {
-        return 0;
-    }
-    if (in_ranges(unicode_width::kZeroWidth, cp)) {
-        return 0;
-    }
-    if (in_ranges(unicode_width::kWide, cp)) {
-        return 2;
-    }
-    if (in_ranges(unicode_width::kAmbiguous, cp)) {
-        return cjk ? 2 : 1;
+    if (const auto* range = find_width_range(unicode_width::kWidths, cp);
+        range != nullptr) {
+        return cjk ? range->width_cjk : range->width;
     }
     return 1;
 }
@@ -490,9 +525,75 @@ int Width::char_width(char32_t cp) {
 }
 
 int str_width(std::string_view text, bool cjk) {
+    const std::u32string cps = utf8_decode(text);
     int total = 0;
-    for (const auto& cp : utf8_decode(text)) {
-        total += char_width(cp, cjk);
+    std::size_t i = 0;
+    while (i < cps.size()) {
+        const char32_t cp = cps[i];
+        const int base = char_width(cp, cjk);
+
+        // Keycap: #, *, or 0-9 followed by VS16 + U+20E3.
+        if (is_keycap_base(cp) && i + 2 < cps.size() && cps[i + 1] == 0xFE0F &&
+            cps[i + 2] == 0x20E3) {
+            total += 2;
+            i += 3;
+            continue;
+        }
+
+        // A pair of regional indicators forms one flag.
+        if (is_regional_indicator(cp) && i + 1 < cps.size() &&
+            is_regional_indicator(cps[i + 1])) {
+            total += 2;
+            i += 2;
+            continue;
+        }
+
+        // Emoji modifier sequence (skin tone).
+        if (is_emoji_modifier_base(cp) && i + 1 < cps.size() &&
+            is_emoji_modifier(cps[i + 1])) {
+            total += 2;
+            i += 2;
+            continue;
+        }
+
+        // Emoji ZWJ sequence: the whole sequence occupies two columns.
+        if ((base >= 2 || is_emoji_presentation(cp))) {
+            std::size_t j = i + 1;
+            if (j < cps.size() && cps[j] == 0xFE0F) ++j;
+            while (j < cps.size() && is_emoji_modifier(cps[j])) ++j;
+            bool has_zwj = false;
+            while (j + 1 < cps.size() && cps[j] == 0x200D) {
+                has_zwj = true;
+                ++j;
+                if (j < cps.size() && cps[j] == 0xFE0F) ++j;
+                if (j < cps.size()) ++j;
+                while (j < cps.size() && is_emoji_modifier(cps[j])) ++j;
+            }
+            if (has_zwj) {
+                total += 2;
+                i = j;
+                continue;
+            }
+        }
+
+        // Emoji presentation sequence (VS16).
+        if (i + 1 < cps.size() && cps[i + 1] == 0xFE0F &&
+            (base >= 2 || is_emoji_presentation(cp))) {
+            total += 2;
+            i += 2;
+            continue;
+        }
+
+        // Text presentation sequence (VS15): force the narrow presentation.
+        if (i + 1 < cps.size() && cps[i + 1] == 0xFE0E &&
+            is_text_presentation(cp)) {
+            total += base >= 2 ? 1 : base;
+            i += 2;
+            continue;
+        }
+
+        total += base;
+        ++i;
     }
     return total;
 }

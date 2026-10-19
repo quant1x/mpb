@@ -57,6 +57,13 @@ void test_width_and_style() {
 
     mpb::Style style{"italic", {}};
     require(style.apply_for("x") == "\x1b[3mx\x1b[0m", "italic style");
+    require(mpb::Width::str_width("👨\u200d👩") == 2, "emoji zwj width");
+    require(mpb::Width::str_width("👨\u200d👩\u200d👧") == 2, "emoji multi zwj width");
+    require(mpb::Width::str_width("🏳️\u200d🌈") == 2, "emoji flag zwj width");
+    require(mpb::Width::str_width("❤️") == 2, "emoji presentation width");
+    require(mpb::Width::str_width("1️⃣") == 2, "keycap width");
+    require(mpb::Width::str_width("🇨🇳") == 2, "flag width");
+    require(mpb::Width::str_width("a\u0301") == 1, "combining width");
 }
 
 void test_single_bar() {
