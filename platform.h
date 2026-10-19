@@ -24,6 +24,20 @@ namespace mpb {
         sleep_for_microseconds(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
     }
 
+    // 把 Windows 控制台输出代码页切到 UTF-8，并为 stdout/stderr 打开 VT 处理，
+    // 析构时恢复原代码页。给示例里的 std::cout 用：进度条自身已经走
+    // WriteConsoleW，不依赖代码页，但 `std::cout << "✔"` 仍然经过 WriteFile。
+    class ConsoleGuard {
+    public:
+        ConsoleGuard();
+        ~ConsoleGuard();
+        ConsoleGuard(const ConsoleGuard &)            = delete;
+        ConsoleGuard &operator=(const ConsoleGuard &) = delete;
+
+    private:
+        unsigned int previous_codepage_ = 0;
+    };
+
 }  // namespace mpb
 
 #endif  // MPB_PLATFORM_H

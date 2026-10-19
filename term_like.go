@@ -30,6 +30,9 @@ type TermLike interface {
 type StdTerm struct {
 	w    io.Writer
 	file *os.File // 构造时探测到的 *os.File；非 nil 时 Width/Height 每次都重新查询尺寸
+	// handle 是 Windows 控制台句柄（非控制台为 0）。非 0 时写入走 WriteConsoleW
+	// （UTF-8 先转 UTF-16），绕开 OEM 代码页；见 console_windows.go。
+	handle uintptr
 	// width/height 只是**取不到尺寸时**的回落值（Rust 是 (24, DEFAULT_WIDTH)），
 	// 不是"当前宽度"—— 终端窗口随时可缩放，尺寸必须每次现问。
 	width  uint16
@@ -58,10 +61,12 @@ type StdTerm struct {
 // （`ProgressDrawTarget::stdout()` 用的就是这个，带缓冲）。
 func NewStdTerm() *StdTerm {
 	w := os.Stdout
+	handle := detectConsole(w)
+	enableVirtualTerminal(handle)
 	if width, height, err := termpkg.GetSize(int(w.Fd())); err == nil {
-		return &StdTerm{w: w, file: w, width: uint16(width), height: uint16(height), isTerm: true, buffered: true}
+		return &StdTerm{w: w, file: w, handle: handle, width: uint16(width), height: uint16(height), isTerm: true, buffered: true}
 	}
-	return &StdTerm{w: os.Stdout, file: os.Stdout, width: 80, height: 20, buffered: true}
+	return &StdTerm{w: os.Stdout, file: os.Stdout, handle: handle, width: 80, height: 20, buffered: true}
 }
 
 // NewStderrTerm 使用 stderr 创建终端，对应 Rust 的 `Term::buffered_stderr()`。
@@ -79,10 +84,12 @@ func NewStdTermWithWriter(w io.Writer) *StdTerm { return newStdTermWithWriter(w,
 func newStdTermWithWriter(w io.Writer, buffered bool) *StdTerm {
 	// Try to derive terminal size if writer is an *os.File
 	if f, ok := w.(*os.File); ok {
+		handle := detectConsole(f)
+		enableVirtualTerminal(handle)
 		if width, height, err := termpkg.GetSize(int(f.Fd())); err == nil {
-			return &StdTerm{w: w, file: f, width: uint16(width), height: uint16(height), isTerm: true, buffered: buffered}
+			return &StdTerm{w: w, file: f, handle: handle, width: uint16(width), height: uint16(height), isTerm: true, buffered: buffered}
 		}
-		return &StdTerm{w: w, file: f, width: 80, height: 20, buffered: buffered}
+		return &StdTerm{w: w, file: f, handle: handle, width: 80, height: 20, buffered: buffered}
 	}
 	return &StdTerm{w: w, width: 80, height: 20, buffered: buffered}
 }
@@ -188,8 +195,7 @@ func (t *StdTerm) WriteStr(s string) error {
 		return nil
 	}
 	if !t.buffered {
-		_, err := io.WriteString(t.w, s)
-		return err
+		return t.writeThrough(s)
 	}
 	t.mu.Lock()
 	t.buf = append(t.buf, s...)
@@ -232,9 +238,18 @@ func (t *StdTerm) Flush() error {
 	if len(t.buf) == 0 {
 		return nil
 	}
-	if _, err := t.w.Write(t.buf); err != nil {
+	if err := t.writeThrough(string(t.buf)); err != nil {
 		return err
 	}
 	t.buf = t.buf[:0]
 	return nil
+}
+
+// writeThrough 是唯一的落盘出口：控制台走 WriteConsoleW，其余走原始字节。
+func (t *StdTerm) writeThrough(s string) error {
+	if t.handle != 0 && writeConsole(t.handle, s) {
+		return nil
+	}
+	_, err := io.WriteString(t.w, s)
+	return err
 }

@@ -16,6 +16,8 @@ from __future__ import annotations
 import importlib
 import sys
 
+from mpb import enable_console
+
 EXAMPLES = [
     "cargo",
     "cargowrap",
@@ -44,6 +46,7 @@ def _usage() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    enable_console()
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
         _usage()

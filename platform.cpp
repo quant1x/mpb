@@ -10,6 +10,44 @@
 #endif
 
 namespace mpb {
+    namespace {
+#if defined(_WIN32)
+        void enable_vt_for_std(DWORD std_handle) {
+            const HANDLE handle = GetStdHandle(std_handle);
+            DWORD        mode   = 0;
+            if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+                return;
+            }
+            if (GetConsoleMode(handle, &mode) == 0) {
+                return;
+            }
+            if ((mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0) {
+                return;
+            }
+            SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+#endif
+    }  // namespace
+
+    ConsoleGuard::ConsoleGuard() {
+#if defined(_WIN32)
+        previous_codepage_ = GetConsoleOutputCP();
+        if (previous_codepage_ != 0 && previous_codepage_ != CP_UTF8) {
+            SetConsoleOutputCP(CP_UTF8);
+        }
+        enable_vt_for_std(STD_OUTPUT_HANDLE);
+        enable_vt_for_std(STD_ERROR_HANDLE);
+#endif
+    }
+
+    ConsoleGuard::~ConsoleGuard() {
+#if defined(_WIN32)
+        if (previous_codepage_ != 0 && previous_codepage_ != CP_UTF8) {
+            SetConsoleOutputCP(previous_codepage_);
+        }
+#endif
+    }
+
     void sleep_for_microseconds(std::int64_t microseconds) {
         if (microseconds <= 0) {
             return;

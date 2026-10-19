@@ -336,14 +336,28 @@ cargo run --example examples -- multi-tree-ext -- --bottom-alignment
 - **锁**：Python 用 `RLock`，`suspend` 回调内可重入；Go 的 Mutex 非重入。
 - **回收时机**：Go/Python 依赖运行时，不保证在确定时刻触发；语义与 Rust 的 Drop 一致。
 
-### Zig 的平台处理
+### 平台层（Windows）
 
-- **短休眠**：Windows 用 `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 可等待定时器（约 0.5ms），
-  绕开默认 15.6ms 粒度；macOS/POSIX 用 `nanosleep`；
-- **自旋提示**：x86 `pause`、arm64 `isb`（与 Rust `core::hint::spin_loop` 一致）；
-  不使用 arm64 `yield`，避免 Apple Silicon 的线程节流形成 convoy；
-- **控制台**：Windows 通过 `WriteConsoleW` 写 UTF-16，并打开
-  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`，否则 `█░` / emoji 会按 OEM 代码页乱码、清行失效。
+Rust 的这些差异由 `std` 和 `console` crate 消化，移植版各自实现，统一按四点检查：
+
+| 检查项 | Go | Python | C++ | Zig |
+|---|---|---|---|---|
+| 控制台编码 | `WriteConsoleW`；示例切 UTF-8 代码页 | `TextIOWrapper` 自动走 UTF-16 | `WriteConsoleW`；示例 `ConsoleGuard` 切 UTF-8 | `WriteConsoleW` |
+| VT 处理 | 打开 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` | 同左（`ctypes`） | 同左 | 同左 |
+| 短休眠 | `time.Sleep` 本身约 3ms 精度 | `time.sleep` 约 3ms 精度 | `mpb::sleep_for` 高精度定时器 | `util.sleepMicros` 高精度定时器 |
+| 终端尺寸 | `x/term` | `os.get_terminal_size` | `GetConsoleScreenBufferInfo` | `GetConsoleScreenBufferInfo` |
+
+- 控制台默认按 OEM 代码页（中文系统 GBK）解释 `WriteFile` 的字节，UTF-8 的
+  `█░` / `✔` / emoji 会乱码，宽度与补白随之错位 —— 所以控制台句柄必须走
+  `WriteConsoleW`（UTF-8 先转 UTF-16）；示例里的 `fmt.Print*` / `std::cout`
+  则通过切换输出代码页解决。
+- 没有 `ENABLE_VIRTUAL_TERMINAL_PROCESSING` 时，`\x1b[2K` / `\x1b[nA` 会被
+  原样打印，画面逐帧堆叠。
+- C++ / Zig 的 `std::this_thread::sleep_for` / `Io.sleep` 受默认 15.6ms 定时器粒度
+  支配，短休眠改用 `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 可等待定时器；
+  Go / Python 的运行时本身已经是毫秒以下精度。
+- Zig 的自旋提示与 Rust 一致：x86 `pause`、arm64 `isb`；不使用 arm64 `yield`，
+  避免 Apple Silicon 的线程节流形成 convoy。
 
 ### 与上游的有意差异
 

@@ -169,6 +169,37 @@ class StdTerm:
                 pass
 
 
+def enable_console() -> None:
+    """在 Windows 控制台上打开 ANSI/VT 序列处理。
+
+    Python 的 ``TextIOWrapper`` 在控制台上已经走 ``WriteConsoleW``（UTF-16），
+    因此不存在 OEM 代码页导致的乱码；但 Windows 默认不解析 ANSI 转义序列，
+    进度条的 ``\x1b[2K`` / ``\x1b[nA`` 会被原样打印，必须在句柄上打开
+    ``ENABLE_VIRTUAL_TERMINAL_PROCESSING``。非 Windows 平台为空操作。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import msvcrt
+    except ImportError:  # pragma: no cover - Windows 一定有
+        return
+
+    kernel32 = ctypes.windll.kernel32
+    enable_vt = 0x0004
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            handle = msvcrt.get_osfhandle(stream.fileno())
+        except (AttributeError, ValueError, OSError):
+            continue
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            continue
+        if mode.value & enable_vt:
+            continue
+        kernel32.SetConsoleMode(handle, mode.value | enable_vt)
+
+
 def _has_fileno(stream: object) -> bool:
     try:
         stream.fileno()  # type: ignore[attr-defined]
@@ -179,11 +210,13 @@ def _has_fileno(stream: object) -> bool:
 
 def new_std_term() -> StdTerm:
     """Buffered stdout terminal (``Term::buffered_stdout()``)."""
+    enable_console()
     return StdTerm(sys.stdout, buffered=True, file=sys.stdout)
 
 
 def new_stderr_term() -> StdTerm:
     """Buffered stderr terminal (``Term::buffered_stderr()``)."""
+    enable_console()
     return StdTerm(sys.stderr, buffered=True, file=sys.stderr)
 
 

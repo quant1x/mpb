@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "mpb.h"
+
 int run_cargo(int argc, char **argv);
 int run_cargo_wrap(int argc, char **argv);
 int run_download(int argc, char **argv);
@@ -62,6 +64,9 @@ namespace {
 }  // namespace
 
 int main(int argc, char **argv) {
+    // std::cout 的 UTF-8 输出需要控制台代码页配合；进度条自身走 WriteConsoleW。
+    mpb::ConsoleGuard console;
+
     if (argc < 2) {
         usage();
         return 2;

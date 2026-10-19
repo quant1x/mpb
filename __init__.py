@@ -134,7 +134,7 @@ from .style import (
     template_from_str,
     template_from_str_with_tab_width,
 )
-from .term_like import StdTerm, TermLike, new_stderr_term, new_std_term, new_std_term_with_writer
+from .term_like import StdTerm, TermLike, enable_console, new_stderr_term, new_std_term, new_std_term_with_writer
 
 try:
     from ._version import __version__
@@ -221,6 +221,7 @@ __all__ = [
     # terminals
     "TermLike",
     "StdTerm",
+    "enable_console",
     "new_std_term",
     "new_stderr_term",
     "new_std_term_with_writer",

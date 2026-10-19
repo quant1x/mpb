@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/quant1x/mpb"
 )
 
 var exampleNames = []string{
@@ -27,6 +29,11 @@ func printUsage() {
 }
 
 func main() {
+	// Windows 控制台默认按 GBK 解释字节；切到 UTF-8，让 fmt.Print* 输出中文、
+	// ✔、emoji 时不乱码。进度条自身的 WriteConsoleW 不依赖这一步。
+	restore := mpb.EnableConsoleUTF8()
+	defer restore()
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(2)
