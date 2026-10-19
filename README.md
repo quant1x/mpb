@@ -23,7 +23,7 @@ Python 版本已完成对齐，代码与 Go 并排放在仓库根目录（组织
 - `<OLD_COMMIT>` —— 要对比的上游提交
 
 本仓库**不再随附** Rust 源码：上游的 `.rs`、`examples/`、`tests/`、`Cargo.toml` 等已全部移除，
-改 Go 时直接看 `<UPSTREAM_DIR>`。要对比两个版本的差异：
+改 Go/Python 时直接看 `<UPSTREAM_DIR>`。要对比两个版本的差异：
 
 ```powershell
 git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
@@ -33,19 +33,23 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 ## 模块对照
 
-| Rust（上游） | Go（本仓库） | 内容 |
-|---|---|---|
-| `style.rs` | `style.go` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
-| `state.rs` | `state.go` | `BarState` / `ProgressState`、绘制状态与出帧 |
-| `draw_target.rs` | `draw_target.go` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
-| `multi.rs` | `multi.go` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
-| `progress_bar.rs` | `progress_bar.go` | `ProgressBar` 门面 |
-| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | 迭代器包装 |
-| `format.rs` | `format.go` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
-| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | 内存终端（测试用）与终端抽象 |
-| `lib.rs` | `doc.go` | 包文档（`go doc` 可见） |
+| Rust（上游） | Go（本仓库） | Python（本仓库） | 内容 |
+|---|---|---|---|
+| `style.rs` | `style.go` | `style.py` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
+| `state.rs` | `state.go` | `state.py` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
+| `draw_target.rs` | `draw_target.go` | `draw_target.py` | 绘制目标（终端 / term-like / multi / hidden）、限速、行数调整 |
+| `multi.rs` | `multi.go` | `multi.py` | `MultiProgress` / `MultiState`、成员排序、orphan 行、僵尸行 |
+| `progress_bar.rs` | `progress_bar.go` | `progress_bar.py` | `ProgressBar` 门面 |
+| `iter.rs` / `rayon.rs` | `iter.go` / `rayon.go` | `iter.py` | 迭代器包装；Python 的 `map_parallel` 也在 `iter.py` |
+| `format.rs` | `format.go` | `format.py` | `HumanBytes` / `HumanDuration` / `HumanFloatCount` 等格式化 |
+| `in_memory.rs` / `term_like.rs` | `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` | 内存终端（测试用）与终端抽象 |
+| `lib.rs` | `doc.go` | `__init__.py` | 包文档与入口 |
 
-（左侧是上游文件名，本仓库只有右列的 Go 文件；上游源码见上面的本地副本路径。）
+Rust 的 `Drop for BarState` 由 Go 的 `weakref.go`、Python 的 `WeakProgressBar` +
+`BarState.__del__` 对应实现（弱引用 + 收尾/僵尸行）。
+
+表中的 Go 与 Python 两列**同目录并排**存放：`style.go` 与 `style.py` 是同级文件，
+`examples/<name>/main.go` 与 `main.py` 也是同级文件。上游源码见上面的本地副本路径。
 
 ## 示例与效果
 
@@ -285,18 +289,7 @@ Python 实现与 Go 实现**同目录并排**存放（与 `mopr` 的组织方式
 同一组输入逐项比对：53 个模板解析、36,928 个 `format_bar` 组合、16 个渲染场景、
 31 个 ANSI 样式用例以及 MultiProgress 场景，结果一致。
 
-| Go | Python |
-|---|---|
-| `style.go` | `style.py` |
-| `state.go` | `state.py` |
-| `draw_target.go` | `draw_target.py` |
-| `multi.go` | `multi.py` |
-| `progress_bar.go` | `progress_bar.py` |
-| `iter.go` / `rayon.go` | `iter.py` |
-| `format.go` | `format.py` |
-| `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` |
-| `weakref.go` | `WeakProgressBar` / `BarState.__del__` |
-| `doc.go` | `__init__.py` |
+模块对应关系见上文「模块对照」。
 
 安装与使用（在仓库根目录执行）：
 
