@@ -1,9 +1,11 @@
 # mpb
 
-`github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的 Go 移植，
-按模块逐一对照实现（`style` / `state` / `draw_target` / `multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），
-目标是与 Rust 侧**逐语义对齐**：同样的模板语法、同样的宽度与换行度量、同样的僵尸行（zombie）算法。
-同一套语义另有 Python 移植：与 Go 代码并排放在仓库根目录（组织方式同 `mopr`），
+`github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的
+Go / Python 双语言移植。两个实现都按模块逐一对照上游（`style` / `state` / `draw_target` /
+`multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），目标是与 Rust 0.18.6
+**逐语义对齐**：同样的模板语法、同样的宽度与换行度量、同样的节流刷新、多进度条/树形嵌套、
+清除与僵尸行（zombie）算法。
+Python 版本已完成对齐，代码与 Go 并排放在仓库根目录（组织方式同 `mopr`），
 `pyproject.toml` 在根目录，包名为 `mpb`（下文「Python 版本」）。
 
 ## 来源
@@ -277,6 +279,12 @@ Python 实现与 Go 实现**同目录并排**存放（与 `mopr` 的组织方式
 `*.py` 与同名 `*.go` 一一对应，`pyproject.toml` 也在根目录，包名即 `mpb`。
 无第三方运行时依赖（Python ≥ 3.10）。
 
+**Python 版本已实现与 Rust `indicatif 0.18.6`（commit `3adb05c`）的语义对齐**，覆盖
+模板/样式/ANSI、宽度与换行度量、20Hz 节流与令牌桶、估算器、单/多进度条、树形嵌套、
+`println` / `clear` / `suspend`、`u64` 边界、Drop/僵尸行与内存终端。Go 与 Python 使用
+同一组输入逐项比对：53 个模板解析、36,928 个 `format_bar` 组合、16 个渲染场景、
+31 个 ANSI 样式用例以及 MultiProgress 场景，结果一致。
+
 | Go | Python |
 |---|---|
 | `style.go` | `style.py` |
@@ -318,14 +326,14 @@ mp.println("start")
 ```
 
 公开 API 使用 Python 的 `snake_case`（`inc` / `set_style` / `finish_with_message`），
-其余语义与 Go 版一致：同样的模板语法、限速、僵尸行算法与终端宽度度量。默认绘制目标仍是
-stderr，重定向到文件/管道时整条进度条隐藏；要在测试里拿渲染结果请用
+渲染与状态语义与 Rust/Go 一致：同样的模板语法、限速、僵尸行算法与终端宽度度量。
+默认绘制目标仍是 stderr，重定向到文件/管道时整条进度条隐藏；要在测试里拿渲染结果请用
 `InMemoryTerm` + `in_memory_draw_target`。
 
-### Python 与 Go 的已知差异
+### Python 与 Go 的语言层差异
 
-下面这些差异来自语言/运行时，不是渲染语义偏差；模板、限速、多进度条、僵尸行/清除行为
-已逐项对齐：
+下面这些差异来自语言/运行时，**不是 Rust 语义偏差**；Rust 的模板、限速、多进度条、
+清除与 Drop/僵尸行语义均已完成对齐：
 
 - **时间单位**：Python 的 `eta()` / `elapsed()` / `duration()` / `set_elapsed()` /
   `enable_steady_tick()` / `human_duration()` / `formatted_duration()` 使用秒（`float`），
