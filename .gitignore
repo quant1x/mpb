@@ -29,3 +29,13 @@
 
 #VS Code
 .vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+_version.py
+.pytest_cache/
+.coverage

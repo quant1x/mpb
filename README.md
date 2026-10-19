@@ -3,6 +3,8 @@
 `github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的 Go 移植，
 按模块逐一对照实现（`style` / `state` / `draw_target` / `multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），
 目标是与 Rust 侧**逐语义对齐**：同样的模板语法、同样的宽度与换行度量、同样的僵尸行（zombie）算法。
+同一套语义另有 Python 移植：与 Go 代码并排放在仓库根目录（组织方式同 `mopr`），
+`pyproject.toml` 在根目录，包名为 `mpb`（下文「Python 版本」）。
 
 ## 来源
 
@@ -268,3 +270,72 @@ go build ./...
 go test ./...
 go run ./examples/multi -capture   # 渲染到内存终端，输出落在 examples/multi_capture.out
 ```
+
+## Python 版本
+
+Python 实现与 Go 实现**同目录并排**存放（与 `mopr` 的组织方式一致）：仓库根目录的
+`*.py` 与同名 `*.go` 一一对应，`pyproject.toml` 也在根目录，包名即 `mpb`。
+无第三方运行时依赖（Python ≥ 3.10）。
+
+| Go | Python |
+|---|---|
+| `style.go` | `style.py` |
+| `state.go` | `state.py` |
+| `draw_target.go` | `draw_target.py` |
+| `multi.go` | `multi.py` |
+| `progress_bar.go` | `progress_bar.py` |
+| `iter.go` / `rayon.go` | `iter.py` |
+| `format.go` | `format.py` |
+| `in_memory.go` / `term_like.go` | `in_memory.py` / `term_like.py` |
+| `weakref.go` | `WeakProgressBar` / `weakref.finalize` |
+| `doc.go` | `__init__.py` |
+
+安装与使用（在仓库根目录执行）：
+
+```bash
+pip install -e .
+```
+
+```python
+from mpb import ProgressBar, ProgressStyle
+
+pb = ProgressBar(1024)
+pb.set_style(ProgressStyle("{wide_bar} {pos}/{len}"))
+for _ in range(1024):
+    pb.inc(1)
+pb.finish_with_message("done")
+```
+
+多条进度条：
+
+```python
+from mpb import MultiProgress, ProgressBar
+
+mp = MultiProgress()
+one = mp.add(ProgressBar(100))
+two = mp.add(ProgressBar(200))
+mp.println("start")
+```
+
+公开 API 使用 Python 的 `snake_case`（`inc` / `set_style` / `finish_with_message`），
+其余语义与 Go 版一致：同样的模板语法、限速、僵尸行算法与终端宽度度量。默认绘制目标仍是
+stderr，重定向到文件/管道时整条进度条隐藏；要在测试里拿渲染结果请用
+`InMemoryTerm` + `in_memory_draw_target`。
+
+测试与示例（Python 测试沿用 `*_test.py` 命名，与 mopr 一致，用 pytest 收集）：
+
+```bash
+python -m pytest                       # 58 个测试
+python examples/single/main.py         # 17 个示例，与 Go 示例目录一一对应
+python examples/multi-tree/main.py
+```
+
+每个 `examples/<name>/` 目录下同时有 `main.go` 与 `main.py`，例如
+`cargo`、`cargowrap`、`download`、`download-continued`、`download-speed`、
+`fastbar`、`finebars`、`iterator`、`log`、`long-spinner`、`morebars`、`multi`、
+`multi-tree`、`multi-tree-ext`、`single`、`tokio`、`yarnish`。
+
+宽度口径与上游一致：`█`、`░` 等歧义宽度字符按 1 列，调用
+`mpb.DEFAULT_WIDTH.set_default_cjk(True)` 后按 2 列。版本号由 `setuptools-scm`
+写入 `_version.py`（源码直接运行时回退到 `0.1.5`）。
+

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpb"
+dynamic = ["version"]
+description = "Python port of quant1x/mpb, a semantic port of Rust's indicatif"
+readme = { file = "README.md", content-type = "text/markdown" }
+keywords = ["progress-bar", "terminal", "indicatif", "mpb"]
+authors = [
+    { name = "Quant1X" },
+    { name = "Quant1X", email = "wangfengxy@sina.cn" },
+]
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Terminals",
+]
+
+[project.urls]
+Homepage = "https://github.com/quant1x/mpb"
+Source = "https://github.com/quant1x/mpb"
+
+[tool.setuptools]
+include-package-data = false
+
+packages = ["mpb"]
+
+[tool.setuptools.package-dir]
+mpb = "."
+
+[tool.setuptools_scm]
+write_to = "_version.py"
+fallback_version = "0.0.0"
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
