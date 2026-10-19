@@ -1,7 +1,8 @@
 # mpb
 
 `github.com/quant1x/mpb` 是 Rust 进度条库 [indicatif](https://github.com/console-rs/indicatif) 的
-Go / Python / C++ / Zig 四语言移植。四个实现都按模块逐一对照上游（`style` / `state` /
+Go / Python / C++ / Zig 四语言移植，外加一个同名的 Rust 薄封装（`mpb` crate，直接
+re-export `indicatif`）。四个移植实现都按模块逐一对照上游（`style` / `state` /
 `draw_target` / `multi` / `progress_bar` / `iter` / `format` / `in_memory` / `term_like`），
 目标是与 Rust 0.18.6 **逐语义对齐**：同样的模板语法、同样的宽度与换行度量、
 同样的节流刷新、多进度条/树形嵌套、清除与僵尸行（zombie）算法。
@@ -275,6 +276,26 @@ go run ./examples yarnish
   C++ 是 `mpb::Width::set_default_cjk(bool)`。
 - `MultiProgress` 的 `State` 字段已导出（对应 Rust 0.18.6 的 `pub state`）；访问前要先加
   `MultiState` 自带的 `RWMutex`（等价于 Rust 的 `read()` / `write()`）。
+
+## Rust 版本
+
+Rust 侧不复制实现：根目录 `Cargo.toml` + `lib.rs` 定义同名 crate `mpb`，
+内容是 `pub use indicatif::*;`，版本与其余语言端口一致（`0.1.6`），feature 全部原样转发
+（`unicode-width` / `improved_unicode` / `in_memory` / `futures` / `rayon` / `tokio` / `wasmbind`）。
+
+```toml
+[dependencies]
+mpb = "0.1.6"          # 语义等价于 indicatif 0.18.6
+```
+
+```bash
+cargo test
+cargo test --features in_memory
+```
+
+`mpb::ProgressBar` / `MultiProgress` / `ProgressStyle` / `Width` / `HumanBytes` 等全部是
+`indicatif` 的公开项（同一个类型，不是包装类型），所以模板、节流、僵尸行与 Drop 行为
+逐字一致；本 crate 只额外提供 `mpb::VERSION`。
 
 ## Go 构建与验证
 
