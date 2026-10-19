@@ -3,6 +3,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-19
+### Changed
+- fix[examples]：五个入口统一接受连字符与下划线两种示例名
+  之前 Go/Python/C++ 只认上游的连字符名（multi-tree），Zig/Rust 只认文件名的
+  下划线写法（multi_tree），同一份文档无法通用。现在五个入口都先做名字归一化：
+
+  - Go/C++：下划线转连字符后再分派；
+  - Zig/Rust：连字符转下划线后再分派；
+  - Python 原本就是连字符转下划线，无需改动。
+
+  文档统一使用上游连字符名，下划线写法继续可用。
+- docs：重写 README，按五语言统一结构与示例说明
+  - 开头讲清三种角色：Rust 规范、四语言移植、Rust 同名薄封装；
+  - 新增语言矩阵（入口/构建/测试/示例/版本来源）与目录结构；
+  - 模块对照加入 Zig 列，补 Drop/僵尸行在各语言的实现方式；
+  - 快速开始按 Go/Python/C++/Zig/Rust 分节，补 Zig、Rust 示例；
+  - 示例集中为一张表（名称/说明/录屏），运行命令按五种入口并列；
+  - 新增模板 key 表、节流与估算、僵尸行、索引语义、运行时差异表；
+  - 修正示例名（连字符为准）、C++ 版本覆盖、Zig 线程与平台时序说明。
+- chore[cpp]：加入 .clang-format / .clang-tidy / .clangd
+  - .clang-format / .clang-tidy 采用 quant1x 仓库的统一基线（与 mopr 相同）；
+  - .clangd 原本指向 mopr 的 conan/ninja-debug 布局，这里改成 mpb 自己的
+    CMake 布局：用 Ninja + CMAKE_EXPORT_COMPILE_COMMANDS 生成 build/；
+  - 说明：现有 C++ 源文件尚未按该 .clang-format 整体重排，执行 clang-format
+    会产生较大 diff，是否统一格式化另行决定。
+- release version 0.1.9
+
 ## [0.1.8] - 2026-10-19
 ### Changed
 - feat[rust]：新增同名 mpb crate，薄封装 indicatif
@@ -387,7 +414,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.8...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.9...HEAD
+[0.1.9]: https://gitee.com/quant1x/mpb/compare/v0.1.8...v0.1.9
 [0.1.8]: https://gitee.com/quant1x/mpb/compare/v0.1.7...v0.1.8
 [0.1.7]: https://gitee.com/quant1x/mpb/compare/v0.1.6...v0.1.7
 [0.1.6]: https://gitee.com/quant1x/mpb/compare/v0.1.5...v0.1.6
