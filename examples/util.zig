@@ -17,8 +17,14 @@ pub fn sleepSecs(io: std.Io, seconds: u64) void {
     std.Io.sleep(io, .fromMilliseconds(@intCast(seconds * 1000)), .awake) catch {};
 }
 
+var stdout_term: ?mpb.term_like.StdTerm = null;
+
 pub fn print(io: std.Io, text: []const u8) void {
-    std.Io.File.stdout().writeStreamingAll(io, text) catch {};
+    _ = io;
+    if (stdout_term == null) {
+        stdout_term = mpb.term_like.StdTerm.init(std.Io.File.stdout(), .stdout, false);
+    }
+    stdout_term.?.writeStr(text);
 }
 
 pub fn println(io: std.Io, text: []const u8) void {

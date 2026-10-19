@@ -11,6 +11,26 @@ const width_mod = @import("width.zig");
 const allocator = util.allocator;
 const io = util.io;
 
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const win = std.os.windows;
+
+/// Windows console access. `WriteFile` uses the console's OEM code page, which
+/// mangles the UTF-8 the library emits; `WriteConsoleW` takes UTF-16 directly.
+/// The console also needs `ENABLE_VIRTUAL_TERMINAL_PROCESSING` before it
+/// interprets the ANSI sequences used for redrawing and clearing.
+const win_console = if (is_windows) struct {
+    extern "kernel32" fn GetConsoleMode(handle: win.HANDLE, mode: *win.DWORD) callconv(.winapi) win.BOOL;
+    extern "kernel32" fn SetConsoleMode(handle: win.HANDLE, mode: win.DWORD) callconv(.winapi) win.BOOL;
+    extern "kernel32" fn WriteConsoleW(
+        handle: win.HANDLE,
+        buffer: [*]const u16,
+        len: win.DWORD,
+        written: ?*win.DWORD,
+        reserved: ?*anyopaque,
+    ) callconv(.winapi) win.BOOL;
+} else struct {};
+
 /// Minimal vtable-based equivalent of `trait TermLike`.
 pub const TermLike = struct {
     ptr: *anyopaque,
@@ -69,6 +89,9 @@ pub const StdTerm = struct {
         var term = StdTerm{ .file = file, .target = target, .buffered = buffered, .is_term = false };
         term.is_term = file.isTty(io) catch false;
         if (term.is_term) {
+            enableVirtualTerminal(file);
+        }
+        if (term.is_term) {
             if (terminalSize(file)) |size| {
                 term.cached_width = size.cols;
                 term.cached_height = size.rows;
@@ -115,8 +138,24 @@ pub const StdTerm = struct {
         if (self.buffered) {
             self.buffer.appendSlice(allocator, text) catch {};
         } else {
-            self.file.writeStreamingAll(io, text) catch {};
+            self.writeRaw(text);
         }
+    }
+
+    /// Write one chunk to the terminal, using the wide-character console API on
+    /// Windows so UTF-8 text is not interpreted as the OEM code page.
+    fn writeRaw(self: *StdTerm, text: []const u8) void {
+        if (is_windows and self.is_term) {
+            const wide = std.unicode.utf8ToUtf16LeAlloc(allocator, text) catch null;
+            if (wide) |buffer| {
+                defer allocator.free(buffer);
+                var written: win.DWORD = 0;
+                if (win_console.WriteConsoleW(self.file.handle, buffer.ptr, @intCast(buffer.len), &written, null).toBool()) {
+                    return;
+                }
+            }
+        }
+        self.file.writeStreamingAll(io, text) catch {};
     }
 
     pub fn writeLine(self: *StdTerm, text: []const u8) void {
@@ -146,7 +185,7 @@ pub const StdTerm = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.buffered and self.buffer.items.len > 0) {
-            self.file.writeStreamingAll(io, self.buffer.items) catch {};
+            self.writeRaw(self.buffer.items);
             self.buffer.clearRetainingCapacity();
         }
     }
@@ -187,6 +226,14 @@ pub const StdTerm = struct {
         @as(*StdTerm, @ptrCast(@alignCast(ptr))).flush();
     }
 };
+
+fn enableVirtualTerminal(file: std.Io.File) void {
+    if (!is_windows) return;
+    var mode: win.DWORD = 0;
+    if (!win_console.GetConsoleMode(file.handle, &mode).toBool()) return;
+    if (mode & win.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0) return;
+    _ = win_console.SetConsoleMode(file.handle, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+}
 
 const TermSize = struct { cols: usize, rows: usize };
 

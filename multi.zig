@@ -474,3 +474,33 @@ test "multi renders println above the bars and drops zombies" {
     pb.deinit();
     try std.testing.expect(std.mem.indexOf(u8, term.contents(), "0/10") == null);
 }
+
+test "multi redraw replaces the previous frame" {
+    const term_like = @import("term_like.zig");
+
+    var term = try term_like.InMemoryTerm.init(20, 80);
+    defer term.deinit();
+
+    var mp = MultiProgress.withDrawTarget(dt.ProgressDrawTarget.termLike(term.termLike()));
+    defer mp.deinit();
+
+    var first = mp.add(ProgressBar.new(10));
+    defer first.deinit();
+    var second = mp.add(ProgressBar.new(10));
+    defer second.deinit();
+
+    first.forceDraw();
+    second.forceDraw();
+    first.inc(1);
+    second.inc(1);
+    first.forceDraw();
+
+    const contents = term.contents();
+    var count: usize = 0;
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, contents, index, "1/10")) |found| {
+        count += 1;
+        index = found + 4;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
