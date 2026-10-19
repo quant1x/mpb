@@ -22,7 +22,7 @@ Python 版本已完成对齐，代码与 Go 并排放在仓库根目录（组织
 - `<UPSTREAM_DIR>` —— 本地克隆 indicatif 的目录，例如 `d:/projects/rust/indicatif`
 - `<OLD_COMMIT>` —— 要对比的上游提交
 
-本仓库**不再随附** Rust 源码：上游的 `.rs`、`examples/`、`tests/`、`Cargo.toml` 等已全部移除，
+源码树里**不再随附** Rust 源码：上游的 `.rs`、`examples/`、`tests/`、`Cargo.toml` 等已全部移除，
 改 Go/Python 时直接看 `<UPSTREAM_DIR>`。要对比两个版本的差异：
 
 ```powershell
@@ -33,7 +33,7 @@ git -C <UPSTREAM_DIR> --no-pager diff <OLD_COMMIT> HEAD -- src/
 
 ## 模块对照
 
-| Rust（上游） | Go（本仓库） | Python（本仓库） | 内容 |
+| Rust（上游） | Go | Python | 内容 |
 |---|---|---|---|
 | `style.rs` | `style.go` | `style.py` | 模板解析（`{bar:40.red/blue}`）、样式（`on_*` 背景、256 色、真彩色）、宽度度量 |
 | `state.rs` | `state.go` | `state.py` | `BarState` / `ProgressState`、绘制状态与出帧、Estimator |
