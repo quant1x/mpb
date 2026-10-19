@@ -24,12 +24,47 @@ namespace mpb {
             return fd >= 0 && _isatty(fd) != 0;
         }
 
-        std::optional<std::pair<int, int>> query_size(int fd) {
-            if (fd < 0)
-                return std::nullopt;
+        HANDLE console_handle(int fd) {
+            if (fd != 1 && fd != 2)
+                return nullptr;
             const DWORD  handle_id = fd == 2 ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE;
             const HANDLE handle    = GetStdHandle(handle_id);
             if (handle == INVALID_HANDLE_VALUE || handle == nullptr) {
+                return nullptr;
+            }
+            return handle;
+        }
+
+        // Windows 控制台默认按 OEM 代码页（中文系统是 GBK）解释 WriteFile 的字节，
+        // UTF-8 的 █░ / ✔ / emoji 会变成乱码，宽度计算的补白随之错位。控制台句柄
+        // 改走 WriteConsoleW（先转 UTF-16），与 Rust std 的处理一致。
+        bool write_console_utf8(int fd, std::string_view text) {
+            const HANDLE handle = console_handle(fd);
+            if (handle == nullptr || text.empty()) {
+                return false;
+            }
+            const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+            if (length <= 0) {
+                return false;
+            }
+            std::wstring wide(static_cast<std::size_t>(length), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
+            DWORD written = 0;
+            return WriteConsoleW(handle, wide.data(), static_cast<DWORD>(wide.size()), &written, nullptr) != 0;
+        }
+
+        // 控制台还需要打开 VT 处理，否则 \x1b[2K / \x1b[nA 会被当成普通文本打印。
+        void enable_virtual_terminal(int fd) {
+            const HANDLE handle = console_handle(fd);
+            DWORD        mode   = 0;
+            if (handle != nullptr && GetConsoleMode(handle, &mode) != 0) {
+                SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+
+        std::optional<std::pair<int, int>> query_size(int fd) {
+            const HANDLE handle = console_handle(fd);
+            if (handle == nullptr) {
                 return std::nullopt;
             }
             CONSOLE_SCREEN_BUFFER_INFO info{};
@@ -71,10 +106,27 @@ namespace mpb {
 
     StdTerm::StdTerm(std::ostream &out, int fd, bool buffered, bool is_term)
         : out_(out), fd_(fd), buffered_(buffered), is_term_(is_term) {
+#if defined(_WIN32)
+        if (is_term_) {
+            enable_virtual_terminal(fd_);
+        }
+#endif
     }
 
     std::optional<std::pair<int, int>> StdTerm::size_checked() const {
         return query_size(fd_);
+    }
+
+    void StdTerm::write_raw(std::string_view text) {
+#if defined(_WIN32)
+        if (is_term_ && fd_ > 0 && write_console_utf8(fd_, text)) {
+            return;
+        }
+#endif
+        out_.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!out_) {
+            throw std::runtime_error("StdTerm: write failed");
+        }
     }
 
     std::uint16_t StdTerm::width() const {
@@ -93,10 +145,7 @@ namespace mpb {
 
     void StdTerm::write_escape(std::string_view text) {
         if (!buffered_) {
-            out_.write(text.data(), static_cast<std::streamsize>(text.size()));
-            if (!out_) {
-                throw std::runtime_error("StdTerm: write failed");
-            }
+            write_raw(text);
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
@@ -134,10 +183,7 @@ namespace mpb {
 
     void StdTerm::write_str(std::string_view text) {
         if (!buffered_) {
-            out_.write(text.data(), static_cast<std::streamsize>(text.size()));
-            if (!out_) {
-                throw std::runtime_error("StdTerm: write failed");
-            }
+            write_raw(text);
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
@@ -152,7 +198,7 @@ namespace mpb {
         if (buffered_) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!buffer_.empty()) {
-                out_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
+                write_raw(buffer_);
                 buffer_.clear();
             }
         }

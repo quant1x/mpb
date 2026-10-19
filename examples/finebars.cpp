@@ -45,7 +45,7 @@ int run_finebars(int argc, char **argv) {
         const auto wait = std::chrono::milliseconds(delay(rng));
         threads.emplace_back([pb, wait] {
             for (int i = 0; i < 512; ++i) {
-                std::this_thread::sleep_for(wait);
+                mpb::sleep_for(wait);
                 pb->inc(1);
                 std::ostringstream message;
                 message << std::setw(3) << (100 * i / 512) << '%';

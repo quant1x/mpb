@@ -62,7 +62,7 @@ int run_yarnish(int argc, char **argv) {
     constexpr int deps = 1232;
     auto          pb   = mpb::ProgressBar::make(deps);
     for (int i = 0; i < deps; ++i) {
-        std::this_thread::sleep_for(3ms);
+        mpb::sleep_for(3ms);
         pb->inc(1);
     }
     pb->finish_and_clear();
@@ -84,7 +84,7 @@ int run_yarnish(int argc, char **argv) {
             const auto   package = packages[local() % packages.size()];
             for (int j = 0; j < count; ++j) {
                 const auto command = commands[local() % commands.size()];
-                std::this_thread::sleep_for(std::chrono::milliseconds(25 + static_cast<int>(local() % 175)));
+                mpb::sleep_for(std::chrono::milliseconds(25 + static_cast<int>(local() % 175)));
                 bar->set_message(package + ": " + command);
                 bar->inc(1);
             }

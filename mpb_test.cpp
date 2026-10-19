@@ -161,7 +161,7 @@ namespace {
     }
 
     void test_iterators_and_seek() {
-        auto                      pb = mpb::ProgressBar::make(3);
+        auto                      pb = mpb::ProgressBar::with_draw_target(std::uint64_t{3}, mpb::hidden_draw_target());
         mpb::ProgressBarIter<int> it(std::vector<int>{1, 2, 3}, pb);
         int                       value = 0;
         require(it.next(value) && value == 1, "iter next 1");
@@ -177,14 +177,14 @@ namespace {
         require(seek.update_seq(100, 1) == 101, "seek max 101");
         require(seek.update_seq(50, 1) == 101, "seek keeps max");
 
-        auto                writer_bar = mpb::ProgressBar::make(100);
+        auto writer_bar = mpb::ProgressBar::with_draw_target(std::uint64_t{100}, mpb::hidden_draw_target());
         std::ostringstream  output;
         mpb::ProgressWriter writer(output, writer_bar);
         writer.write("hello");
         require(writer_bar->position() == 5, "writer position");
         require(output.str() == "hello", "writer output");
 
-        auto                      parallel_bar = mpb::ProgressBar::make(10);
+        auto parallel_bar = mpb::ProgressBar::with_draw_target(std::uint64_t{10}, mpb::hidden_draw_target());
         mpb::ProgressBarIter<int> parallel(std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, parallel_bar);
         const auto mapped = mpb::map_parallel(parallel, 4, [](const int &value) { return value * value; });
         require(mapped.size() == 10 && mapped[3] == 9 && mapped[9] == 81, "map_parallel order");

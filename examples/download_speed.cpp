@@ -24,7 +24,7 @@ int run_download_speed(int argc, char **argv) {
     while (downloaded < total_size) {
         downloaded = std::min(downloaded + 223211, total_size);
         pb->set_position(downloaded);
-        std::this_thread::sleep_for(12ms);
+        mpb::sleep_for(12ms);
     }
     pb->finish_with_message("downloaded");
     return 0;

@@ -49,7 +49,7 @@ int run_multi(int argc, char **argv) {
 
     std::thread fast_thread([multi, fast] {
         for (int i = 0; i < 1024; ++i) {
-            std::this_thread::sleep_for(2ms);
+            mpb::sleep_for(2ms);
             fast->inc(1);
         }
         multi->println("pb3 is done!");
@@ -60,13 +60,13 @@ int run_multi(int argc, char **argv) {
     std::uniform_real_distribution<double> delay(1.0, 5.0);
     std::vector<std::thread>               slow_threads;
     for (std::uint64_t i = 0; i < count; ++i) {
-        std::this_thread::sleep_for(15ms);
+        mpb::sleep_for(15ms);
         if (i == count / 3) {
-            std::this_thread::sleep_for(2s);
+            mpb::sleep_for(2s);
         }
         todo->inc(1);
         slow_threads.emplace_back([finished, wait = delay(rng)] {
-            std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+            mpb::sleep_for(std::chrono::duration<double>(wait));
             finished->inc(1);
         });
     }

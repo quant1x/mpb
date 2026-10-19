@@ -22,7 +22,7 @@ int run_morebars(int argc, char **argv) {
         auto child = multi->add(mpb::ProgressBar::make(128));
         child->set_style(style);
         for (int j = 0; j < 128; ++j) {
-            std::this_thread::sleep_for(5ms);
+            mpb::sleep_for(5ms);
             child->inc(1);
         }
         child->finish();

@@ -51,6 +51,7 @@ namespace mpb {
         bool          is_term() const override { return is_term_; }
 
     private:
+        void                               write_raw(std::string_view text);
         void                               write_escape(std::string_view text);
         std::optional<std::pair<int, int>> size_checked() const;
 

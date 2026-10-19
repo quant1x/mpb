@@ -163,6 +163,6 @@ int run_multi_tree_ext(int argc, char **argv) {
             }
             main_bar->inc(1);
         }
-        std::this_thread::sleep_for(20ms);
+        mpb::sleep_for(20ms);
     }
 }

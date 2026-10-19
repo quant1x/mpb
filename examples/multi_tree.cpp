@@ -101,7 +101,7 @@ int run_multi_tree(int argc, char **argv) {
     main_bar->force_draw();
 
     while (true) {
-        std::this_thread::sleep_for(15ms);
+        mpb::sleep_for(15ms);
         const auto action = get_action(tree, elements, rng);
         if (!action.has_value()) {
             main_bar->finish();

@@ -19,7 +19,7 @@ int run_long_spinner(int argc, char **argv) {
     style      = style.with_tick_strings({"▹▹▹▹▹", "▸▹▹▹▹", "▹▸▹▹▹", "▹▹▸▹▹", "▹▹▹▸▹", "▹▹▹▹▸", "▪▪▪▪▪"});
     pb->set_style(std::move(style));
     pb->set_message("Calculating...");
-    std::this_thread::sleep_for(5s);
+    mpb::sleep_for(5s);
     pb->finish_with_message("Done");
     return 0;
 }

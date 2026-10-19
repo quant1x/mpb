@@ -14,7 +14,7 @@ int run_tokio(int argc, char **argv) {
     constexpr int steps = 1024;
     auto          pb    = mpb::ProgressBar::make(steps);
     for (int i = 0; i < steps; ++i) {
-        std::this_thread::sleep_for(5ms);
+        mpb::sleep_for(5ms);
         pb->inc(1);
     }
     pb->finish();

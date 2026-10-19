@@ -161,6 +161,11 @@ ctest --test-dir build-msvc -C Release --output-on-failure
 非 git 源码树用 `-DMPB_VERSION_OVERRIDE=x.y.z` 显式指定版本；`-DMPB_BUILD_EXAMPLES=OFF`
 可以只构建库。
 
+Windows 控制台与 Zig 走同一套处理：输出经 `WriteConsoleW` 转 UTF-16（绕开 OEM 代码页），
+并打开 `ENABLE_VIRTUAL_TERMINAL_PROCESSING`；短休眠用 `mpb::sleep_for`
+（`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`），避免 `std::this_thread::sleep_for` 落到
+15.6ms 粒度。macOS/POSIX 直接使用标准库。
+
 ### Zig
 
 ```zig
@@ -316,7 +321,7 @@ cargo run --example examples -- multi-tree-ext -- --bottom-alignment
 | 迭代器 | `iter.go`（切片） | 任意可迭代对象 | `iter.h` | 未移植 | `ProgressIterator` |
 | 宽度表 | `go-runewidth` | `unicodedata` + 手写规则 | Rust `unicode-width` 表 | Rust `unicode-width` 表 | `unicode-width` |
 | 生命周期 | finalizer + weak registry | `weakref` + `__del__` | `weak_ptr` + 析构 | 引用计数 + `deinit()` | `Drop` |
-| 跨平台时序 | 标准库 | 标准库 | 标准库 | 自带高精度 sleep / 控制台处理 | 标准库 + `console` |
+| 跨平台时序 | 标准库 | 标准库 | `platform.cpp`（高精度 sleep / 控制台） | 自带高精度 sleep / 控制台处理 | 标准库 + `console` |
 
 ### Python 与 Go 的差异
 

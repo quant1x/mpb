@@ -14,7 +14,7 @@ int run_log(int argc, char **argv) {
     using namespace std::chrono_literals;
     auto pb = mpb::ProgressBar::make(100);
     for (int i = 0; i < 100; ++i) {
-        std::this_thread::sleep_for(25ms);
+        mpb::sleep_for(25ms);
         pb->println("[+] finished #" + std::to_string(i));
         pb->inc(1);
     }

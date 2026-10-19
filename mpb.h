@@ -16,6 +16,7 @@
 #include "in_memory.h"
 #include "iter.h"
 #include "multi.h"
+#include "platform.h"
 #include "progress_bar.h"
 #include "state.h"
 #include "style.h"

@@ -20,7 +20,7 @@ int run_iterator(int argc, char **argv) {
         auto iter  = mpb::progress(items);
         int  value = 0;
         while (iter.next(value)) {
-            std::this_thread::sleep_for(5ms);
+            mpb::sleep_for(5ms);
         }
     }
 
@@ -28,7 +28,7 @@ int run_iterator(int argc, char **argv) {
         auto iter  = mpb::progress_count(items, 1000);
         int  value = 0;
         while (iter.next(value)) {
-            std::this_thread::sleep_for(5ms);
+            mpb::sleep_for(5ms);
         }
     }
 
@@ -39,7 +39,7 @@ int run_iterator(int argc, char **argv) {
     auto iter  = mpb::progress_with(items, pb);
     int  value = 0;
     while (iter.next(value)) {
-        std::this_thread::sleep_for(5ms);
+        mpb::sleep_for(5ms);
     }
 
     std::cout << "done\n";

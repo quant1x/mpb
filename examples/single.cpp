@@ -13,7 +13,7 @@ int run_single(int argc, char **argv) {
     using namespace std::chrono_literals;
     auto pb = mpb::ProgressBar::make(1024);
     for (int i = 0; i < 1024; ++i) {
-        std::this_thread::sleep_for(5ms);
+        mpb::sleep_for(5ms);
         pb->inc(1);
     }
     pb->finish_with_message("done");

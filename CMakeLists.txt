@@ -27,6 +27,7 @@ add_library(mpb STATIC
     draw_target.cpp
     multi.cpp
     progress_bar.cpp
+    platform.cpp
 )
 add_library(mpb::mpb ALIAS mpb)
 

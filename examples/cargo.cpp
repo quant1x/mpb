@@ -124,7 +124,7 @@ int run_cargo(int argc, char **argv) {
                 const bool last = *crate_index == crates.size() - 1;
                 const int  base = last ? 1000 : 250;
                 const int  span = last ? 1000 : 750;
-                std::this_thread::sleep_for(std::chrono::milliseconds(base + static_cast<int>(local() % span)));
+                mpb::sleep_for(std::chrono::milliseconds(base + static_cast<int>(local() % span)));
             }
         });
     }
