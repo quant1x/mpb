@@ -7,7 +7,7 @@
 
 #include "mpb.h"
 
-int run_single(int argc, char** argv) {
+int run_single(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;

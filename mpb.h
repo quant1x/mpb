@@ -24,8 +24,10 @@
 
 namespace mpb {
 
-inline std::string version() { return MPB_VERSION; }
+    inline std::string version() {
+        return MPB_VERSION;
+    }
 
-} // namespace mpb
+}  // namespace mpb
 
-#endif // MPB_MPB_H
+#endif  // MPB_MPB_H

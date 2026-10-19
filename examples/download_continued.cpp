@@ -8,14 +8,14 @@
 
 #include "mpb.h"
 
-int run_download_continued(int argc, char** argv) {
+int run_download_continued(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;
-    std::uint64_t downloaded = 69369369;
+    std::uint64_t           downloaded = 69369369;
     constexpr std::uint64_t total_size = 231231231;
 
-    auto pb = mpb::ProgressBar::make(total_size);
+    auto pb    = mpb::ProgressBar::make(total_size);
     auto style = mpb::progress_style_with_template(
         "{spinner:.green} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})");
     style.set_progress_chars("#>-");

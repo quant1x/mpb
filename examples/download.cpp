@@ -10,21 +10,19 @@
 
 #include "mpb.h"
 
-int run_download(int argc, char** argv) {
+int run_download(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;
     constexpr std::uint64_t total_size = 231231231;
-    std::uint64_t downloaded = 0;
+    std::uint64_t           downloaded = 0;
 
-    auto pb = mpb::ProgressBar::make(total_size);
-    auto style = mpb::progress_style_with_template(
-        "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] "
-        "{bytes}/{total_bytes} ({eta})");
-    style.with_key("eta", [](const mpb::ProgressState& state) {
+    auto pb    = mpb::ProgressBar::make(total_size);
+    auto style = mpb::progress_style_with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] "
+                                                   "{bytes}/{total_bytes} ({eta})");
+    style.with_key("eta", [](const mpb::ProgressState &state) {
         std::ostringstream out;
-        out << std::fixed << std::setprecision(1)
-            << std::chrono::duration<double>(state.eta()).count() << 's';
+        out << std::fixed << std::setprecision(1) << std::chrono::duration<double>(state.eta()).count() << 's';
         return out.str();
     });
     style.set_progress_chars("#>-");

@@ -21,22 +21,24 @@
 
 namespace {
 
-std::vector<std::string> frames(const std::string& text) {
-    std::vector<std::string> out;
-    for (char c : text) out.emplace_back(1, c);
-    return out;
-}
+    std::vector<std::string> frames(const std::string &text) {
+        std::vector<std::string> out;
+        for (char c : text)
+            out.emplace_back(1, c);
+        return out;
+    }
 
-std::string trim(std::string text) {
-    const auto first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return {};
-    const auto last = text.find_last_not_of(" \t\r\n");
-    return text.substr(first, last - first + 1);
-}
+    std::string trim(std::string text) {
+        const auto first = text.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+            return {};
+        const auto last = text.find_last_not_of(" \t\r\n");
+        return text.substr(first, last - first + 1);
+    }
 
-} // namespace
+}  // namespace
 
-int run_cargo_wrap(int argc, char** argv) {
+int run_cargo_wrap(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;
@@ -47,10 +49,10 @@ int run_cargo_wrap(int argc, char** argv) {
     pb->enable_steady_tick(200ms);
 
     auto style = mpb::progress_style_with_template("{spinner:.dim.bold} cargo: {wide_msg}");
-    style = style.with_tick_strings(frames("/|\\- "));
+    style      = style.with_tick_strings(frames("/|\\- "));
     pb->set_style(std::move(style));
 
-    std::FILE* pipe = MPB_POPEN("cargo build --release 2>&1", "r");
+    std::FILE *pipe = MPB_POPEN("cargo build --release 2>&1", "r");
     if (pipe == nullptr) {
         std::cerr << "failed to start cargo\n";
         return 1;
@@ -67,8 +69,7 @@ int run_cargo_wrap(int argc, char** argv) {
     MPB_PCLOSE(pipe);
 
     pb->finish_and_clear();
-    const auto elapsed = std::chrono::duration_cast<mpb::Duration>(
-        std::chrono::steady_clock::now() - started);
+    const auto elapsed = std::chrono::duration_cast<mpb::Duration>(std::chrono::steady_clock::now() - started);
     std::cout << "Done in " << mpb::human_duration(elapsed) << '\n';
     return 0;
 }

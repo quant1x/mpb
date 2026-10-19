@@ -7,12 +7,12 @@
 
 #include "mpb.h"
 
-int run_tokio(int argc, char** argv) {
+int run_tokio(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;
     constexpr int steps = 1024;
-    auto pb = mpb::ProgressBar::make(steps);
+    auto          pb    = mpb::ProgressBar::make(steps);
     for (int i = 0; i < steps; ++i) {
         std::this_thread::sleep_for(5ms);
         pb->inc(1);

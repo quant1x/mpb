@@ -13,14 +13,14 @@
 
 #include "mpb.h"
 
-int run_finebars(int argc, char** argv) {
+int run_finebars(int argc, char **argv) {
     (void)argc;
     (void)argv;
     using namespace std::chrono_literals;
     struct StyleSpec {
-        const char* prefix;
-        const char* chars;
-        const char* color;
+        const char *prefix;
+        const char *chars;
+        const char *color;
     };
     const std::vector<StyleSpec> styles = {
         {"Rough bar:", "█  ", "red"},
@@ -30,15 +30,14 @@ int run_finebars(int argc, char** argv) {
         {"Blocky:   ", "█▛▌▖  ", "magenta"},
     };
 
-    auto multi = mpb::MultiProgress::default_instance();
-    std::vector<std::thread> threads;
-    std::mt19937 rng(std::random_device{}());
+    auto                               multi = mpb::MultiProgress::default_instance();
+    std::vector<std::thread>           threads;
+    std::mt19937                       rng(std::random_device{}());
     std::uniform_int_distribution<int> delay(10, 30);
 
-    for (const auto& spec : styles) {
-        auto pb = multi->add(mpb::ProgressBar::make(512));
-        auto style = mpb::progress_style_with_template(
-            std::string("{prefix:.bold}▕{bar:.") + spec.color + "}▏{msg}");
+    for (const auto &spec : styles) {
+        auto pb    = multi->add(mpb::ProgressBar::make(512));
+        auto style = mpb::progress_style_with_template(std::string("{prefix:.bold}▕{bar:.") + spec.color + "}▏{msg}");
         style.set_progress_chars(spec.chars);
         pb->set_style(std::move(style));
         pb->set_prefix(spec.prefix);
@@ -56,6 +55,7 @@ int run_finebars(int argc, char** argv) {
         });
     }
 
-    for (auto& thread : threads) thread.join();
+    for (auto &thread : threads)
+        thread.join();
     return 0;
 }

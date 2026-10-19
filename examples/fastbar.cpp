@@ -11,22 +11,21 @@
 
 namespace {
 
-void many_units_of_easy_work(std::uint64_t count, const std::string& label) {
-    auto pb = mpb::ProgressBar::make(count);
-    std::uint64_t sum = 0;
-    for (std::uint64_t i = 0; i < count; ++i) {
-        sum += 2 * i + 3;
-        pb->inc(1);
+    void many_units_of_easy_work(std::uint64_t count, const std::string &label) {
+        auto          pb  = mpb::ProgressBar::make(count);
+        std::uint64_t sum = 0;
+        for (std::uint64_t i = 0; i < count; ++i) {
+            sum += 2 * i + 3;
+            pb->inc(1);
+        }
+        pb->finish();
+        std::cout << '[' << label << "] Sum (" << sum << ") calculated in " << std::fixed << std::setprecision(6)
+                  << std::chrono::duration<double>(pb->elapsed()).count() << "s\n";
     }
-    pb->finish();
-    std::cout << '[' << label << "] Sum (" << sum << ") calculated in "
-              << std::fixed << std::setprecision(6)
-              << std::chrono::duration<double>(pb->elapsed()).count() << "s\n";
-}
 
-} // namespace
+}  // namespace
 
-int run_fastbar(int argc, char** argv) {
+int run_fastbar(int argc, char **argv) {
     (void)argc;
     (void)argv;
     many_units_of_easy_work(std::uint64_t{1} << 20, "Default progress bar ");
