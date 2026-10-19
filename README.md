@@ -292,7 +292,8 @@ C++ 实现与 Go/Python **同目录并排**：`style.h` / `style.cpp` 与 `style
 **C++ 版本已实现与 Rust `indicatif 0.18.6` 的语义对齐**，覆盖模板/样式/ANSI、宽度与换行
 度量、20Hz 节流与令牌桶、估算器、单/多进度条、树形嵌套、`println` / `clear` / `suspend`、
 `u64` 边界、Drop/僵尸行与内存终端。宽度表由 Rust `unicode-width` 0.2.2（indicatif 使用的
-同一版本）生成，包含 `width` / `width_cjk` 以及 emoji ZWJ、VS16、keycap 等序列规则。
+同一版本）生成，包含 `width` / `width_cjk` 以及 emoji ZWJ、VS16、keycap 等序列规则；
+极少数阿拉伯/希伯来/印度文字连字仍按字符合成（未复刻该 crate 的完整连字状态机）。
 
 ```cpp
 #include "mpb.h"
