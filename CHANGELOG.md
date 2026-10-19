@@ -3,6 +3,42 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-19
+### Changed
+- feat[rust]：新增同名 mpb crate，薄封装 indicatif
+  - 根目录 Cargo.toml + lib.rs，包名 mpb，版本与其余语言端口一致（0.1.6）；
+  - 实现只有 pub use indicatif::*，不复制代码、不包类型，模板/节流/僵尸行/Drop
+    语义直接来自 indicatif 0.18.6；
+  - feature 全部转发：unicode-width / improved_unicode / in_memory / futures /
+    rayon / tokio / wasmbind；
+  - 额外提供 mpb::VERSION（与 Go/Python/C++/Zig 的版本口径一致）；
+  - cargo test 与 cargo test --features in_memory 均通过。
+- chore[rust]：crate 版本对齐 0.1.7
+- refactor[rust]：取消 mpb 自身 feature，indicatif 可选集成全部默认开启
+  调用方不应该为了用到 InMemoryTerm / ParallelProgressIterator / tokio 适配
+  去记一套二手 feature 名字。现在 mpb 没有 [features] 段，依赖上直接打开
+  unicode-width、improved_unicode、in_memory、futures、rayon、tokio、wasmbind，
+  API 面与 indicatif 全量构建一致，cargo add mpb 即可。
+
+  代价是无法再通过 --no-default-features 裁掉 tokio/rayon/vt100；需要时再引入
+  feature 开关。
+- feat[rust]：补齐 17 个示例与统一入口 examples/main.rs
+  与其他语言保持同一套示例名字与调用方式：
+
+      cargo run --example examples -- multi_tree
+      cargo run --example examples -- multi_tree_ext -- --bottom-alignment
+
+  - Cargo 侧 autoexamples = false，只注册 [[example]] examples，
+    17 个 examples/*.rs 都是 main.rs 的模块（导出 run()），不再生成
+    cargo run --example <name> 的按文件入口；
+  - 示例按上游 Rust examples/ 移植：finebars/multi/yarnish 真开线程，
+    cargowrap 真的 spawn  并逐行喂 spinner，
+    iterator 使用 mpb::ProgressIterator；
+  - 上游的 rand 换成 examples/support.rs 里的确定性 LCG（种子固定，便于对照），
+    tokio 示例用等价 5ms 循环（不引入 tokio dev-dependency）；
+  - 17 个示例已逐一运行通过。
+- release version 0.1.8
+
 ## [0.1.7] - 2026-10-19
 ### Changed
 - feat[zig]：核心单条进度条、Rust 宽度表与构建入口
@@ -351,7 +387,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.7...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.8...HEAD
+[0.1.8]: https://gitee.com/quant1x/mpb/compare/v0.1.7...v0.1.8
 [0.1.7]: https://gitee.com/quant1x/mpb/compare/v0.1.6...v0.1.7
 [0.1.6]: https://gitee.com/quant1x/mpb/compare/v0.1.5...v0.1.6
 [0.1.5]: https://gitee.com/quant1x/mpb/compare/v0.1.4...v0.1.5
