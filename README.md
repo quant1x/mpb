@@ -291,7 +291,17 @@ mpb = "0.1.7"          # 语义等价于 indicatif 0.18.6（含全部可选集�
 
 ```bash
 cargo test
+
+# 17 个示例：与 Go/Python/C++/Zig 同名，统一入口按名字分派
+cargo run --example examples -- single
+cargo run --example examples -- multi_tree
+cargo run --example examples -- multi_tree_ext -- --bottom-alignment
+cargo run --example examples --            # 不带参数时打印全部名字
 ```
+
+示例文件是 `examples/main.rs` 的模块（`examples/*.rs` 均导出 `run()`），
+所以 Cargo 侧只注册一个 example target（`autoexamples = false`），
+不提供 `cargo run --example single` 这种按文件生成的入口。
 
 `mpb::ProgressBar` / `MultiProgress` / `ProgressStyle` / `Width` / `HumanBytes` 等全部是
 `indicatif` 的公开项（同一个类型，不是包装类型），所以模板、节流、僵尸行与 Drop 行为

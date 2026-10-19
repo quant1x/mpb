@@ -8,10 +8,22 @@ keywords = ["cli", "progress", "pb", "progressbar"]
 categories = ["command-line-interface"]
 license = "MIT"
 repository = "https://github.com/quant1x/mpb"
+# One dispatcher (`examples/main.rs`) like the other language ports, instead of
+# one Cargo example binary per file.
+autoexamples = false
 
 [lib]
 name = "mpb"
 path = "lib.rs"
+
+[[example]]
+name = "examples"
+path = "examples/main.rs"
+
+[dev-dependencies]
+# Already in the dependency graph through indicatif; used by the cargo/yarnish
+# examples for terminal width and colored output.
+console = "0.16"
 
 # All of indicatif's optional integrations are enabled here so callers never
 # have to know about or spell out feature flags. The crate itself adds no code:
