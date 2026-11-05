@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-06
+### Changed
+- 调整python项目的名称
+- release version 0.1.11
+
 ## [0.1.10] - 2026-10-19
 ### Changed
 - style[cpp]：clang-format 全量重排（不改变语义）
@@ -465,7 +470,8 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.10...HEAD
+[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.11...HEAD
+[0.1.11]: https://gitee.com/quant1x/mpb/compare/v0.1.10...v0.1.11
 [0.1.10]: https://gitee.com/quant1x/mpb/compare/v0.1.9...v0.1.10
 [0.1.9]: https://gitee.com/quant1x/mpb/compare/v0.1.8...v0.1.9
 [0.1.8]: https://gitee.com/quant1x/mpb/compare/v0.1.7...v0.1.8
