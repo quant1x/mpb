@@ -1,6 +1,6 @@
 module github.com/quant1x/mpb
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/danielgatis/go-vte v1.0.11
