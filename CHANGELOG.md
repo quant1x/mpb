@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-06
+### Changed
+- fix[go]: 更新go版本到1.27.3
+- release version 0.1.12
+
 ## [0.1.11] - 2026-11-06
 ### Changed
 - 调整python项目的名称
@@ -470,18 +475,19 @@ All notable changes to this project will be documented in this file.
 - update changelog
 
 
-[Unreleased]: https://gitee.com/quant1x/mpb/compare/v0.1.11...HEAD
-[0.1.11]: https://gitee.com/quant1x/mpb/compare/v0.1.10...v0.1.11
-[0.1.10]: https://gitee.com/quant1x/mpb/compare/v0.1.9...v0.1.10
-[0.1.9]: https://gitee.com/quant1x/mpb/compare/v0.1.8...v0.1.9
-[0.1.8]: https://gitee.com/quant1x/mpb/compare/v0.1.7...v0.1.8
-[0.1.7]: https://gitee.com/quant1x/mpb/compare/v0.1.6...v0.1.7
-[0.1.6]: https://gitee.com/quant1x/mpb/compare/v0.1.5...v0.1.6
-[0.1.5]: https://gitee.com/quant1x/mpb/compare/v0.1.4...v0.1.5
-[0.1.4]: https://gitee.com/quant1x/mpb/compare/v0.1.3...v0.1.4
-[0.1.3]: https://gitee.com/quant1x/mpb/compare/v0.1.2...v0.1.3
-[0.1.2]: https://gitee.com/quant1x/mpb/compare/v0.1.1...v0.1.2
-[0.1.1]: https://gitee.com/quant1x/mpb/compare/v0.1.0...v0.1.1
-[0.1.0]: https://gitee.com/quant1x/mpb/compare/v0.0.1...v0.1.0
+[Unreleased]: https://codeberg.org/quant1x/mpb/compare/v0.1.12...HEAD
+[0.1.12]: https://codeberg.org/quant1x/mpb/compare/v0.1.11...v0.1.12
+[0.1.11]: https://codeberg.org/quant1x/mpb/compare/v0.1.10...v0.1.11
+[0.1.10]: https://codeberg.org/quant1x/mpb/compare/v0.1.9...v0.1.10
+[0.1.9]: https://codeberg.org/quant1x/mpb/compare/v0.1.8...v0.1.9
+[0.1.8]: https://codeberg.org/quant1x/mpb/compare/v0.1.7...v0.1.8
+[0.1.7]: https://codeberg.org/quant1x/mpb/compare/v0.1.6...v0.1.7
+[0.1.6]: https://codeberg.org/quant1x/mpb/compare/v0.1.5...v0.1.6
+[0.1.5]: https://codeberg.org/quant1x/mpb/compare/v0.1.4...v0.1.5
+[0.1.4]: https://codeberg.org/quant1x/mpb/compare/v0.1.3...v0.1.4
+[0.1.3]: https://codeberg.org/quant1x/mpb/compare/v0.1.2...v0.1.3
+[0.1.2]: https://codeberg.org/quant1x/mpb/compare/v0.1.1...v0.1.2
+[0.1.1]: https://codeberg.org/quant1x/mpb/compare/v0.1.0...v0.1.1
+[0.1.0]: https://codeberg.org/quant1x/mpb/compare/v0.0.1...v0.1.0
 
-[0.0.1]: https://gitee.com/quant1x/mpb/releases/tag/v0.0.1
+[0.0.1]: https://codeberg.org/quant1x/mpb/releases/tag/v0.0.1
